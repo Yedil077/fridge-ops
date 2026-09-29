@@ -39,9 +39,12 @@ export class PgStore implements StateStore {
     this.pool = pool ?? new Pool({
       connectionString: url,
       max: 4,
+      // fail fast (and show it in the logs) instead of hanging when the database is unreachable
+      connectionTimeoutMillis: 15_000,
       ssl: process.env.DATABASE_SSL === "true" ? { rejectUnauthorized: process.env.DATABASE_SSL_STRICT !== "false" } : undefined,
     });
     this.ready = this.pool.query(DDL).then(() => undefined);
+    this.ready.catch((e) => console.error("[fridge-ops] database init failed:", e instanceof Error ? e.message : e));
   }
 
   async load(): Promise<AppState> {

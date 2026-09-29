@@ -65,9 +65,16 @@ class Runtime {
   /** Loads OUR state from the configured store (PostgreSQL in production) and prepares the runtime. */
   static async create(): Promise<Runtime> {
     const store = await createStore();
+    console.info(`[fridge-ops] starting · store=${store.kind} · data=${process.env.DATA_SOURCE ?? "mock"}`);
     const rt = new Runtime(await store.load(), store);
-    const created = bootstrapUsers(rt.state);
-    if (created.length) console.info(`[fridge-ops] created initial accounts: ${created.join(", ")}`);
+    console.info(`[fridge-ops] state loaded · users=${rt.state.users.length} · missions=${rt.state.missions.length}`);
+    try {
+      const created = bootstrapUsers(rt.state);
+      if (created.length) console.info(`[fridge-ops] created initial accounts: ${created.join(", ")}`);
+    } catch (e) {
+      // a bad ADMIN_LOGIN / ADMIN_PIN must not take the whole service down
+      console.error("[fridge-ops] could not create the first administrator:", e instanceof Error ? e.message : e, "— check ADMIN_LOGIN (2–32 chars) and ADMIN_PIN (4–8 digits)");
+    }
     if (rt.mode === "mock") rt.ensureSim();
     rt.save();
     await rt.saving;
@@ -612,6 +619,7 @@ const g = globalThis as unknown as { __fridgeOpsRuntime?: Promise<Runtime> };
 export function getRuntime(): Promise<Runtime> {
   if (!g.__fridgeOpsRuntime) {
     g.__fridgeOpsRuntime = Runtime.create().catch((e) => {
+      console.error("[fridge-ops] startup failed:", e instanceof Error ? e.message : e);
       g.__fridgeOpsRuntime = undefined;
       throw e;
     });
