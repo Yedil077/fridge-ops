@@ -72,9 +72,9 @@ jobs:
       - name: Install
         run: npm ci
 
-      - name: Sync Capacitor (placeholder server URL — no secrets)
+      - name: Sync Capacitor (production server URL — no secrets)
         env:
-          CAP_SERVER_URL: https://fridge-ops.example.com/m
+          CAP_SERVER_URL: https://fridge-ops.onrender.com/m
         run: npm run cap:sync
 
       - name: Build debug APK

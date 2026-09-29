@@ -11,7 +11,7 @@ import type { CapacitorConfig } from "@capacitor/cli";
  *   CAP_SERVER_URL=https://ops.example.kz/m npm run cap:sync      ← production
  *   CAP_SERVER_URL=http://192.168.1.50:3000/m npm run cap:sync    ← development on local Wi-Fi
  */
-const serverUrl = process.env.CAP_SERVER_URL || "https://fridge-ops.example.com/m";
+const serverUrl = process.env.CAP_SERVER_URL || "https://fridge-ops.onrender.com/m";
 const isHttp = serverUrl.startsWith("http://");
 
 const config: CapacitorConfig = {

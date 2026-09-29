@@ -4,7 +4,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-const url = process.env.CAP_SERVER_URL || "https://fridge-ops.example.com/m";
+const url = process.env.CAP_SERVER_URL || "https://fridge-ops.onrender.com/m";
 if (!/^https?:\/\//.test(url)) throw new Error("CAP_SERVER_URL must start with http:// or https://");
 if (/KITSHOP|PASSWORD|SECRET/i.test(url)) throw new Error("CAP_SERVER_URL must be a plain server address");
 const out = path.join(process.cwd(), "capacitor-www");
