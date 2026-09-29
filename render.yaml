@@ -1,0 +1,36 @@
+# Render Blueprint — free pilot deployment (web service from the Dockerfile).
+# Database: free PostgreSQL on Neon (neon.tech) — paste its connection string into DATABASE_URL.
+# Secrets marked `sync: false` are entered in the Render dashboard, never committed.
+services:
+  - type: web
+    name: fridge-ops
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: STORE_DRIVER
+        value: postgres
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_SSL
+        value: "true"
+      - key: AUTH_SECRET
+        generateValue: true
+      - key: ADMIN_LOGIN
+        value: admin
+      - key: ADMIN_PIN
+        sync: false
+      - key: ADMIN_NAME
+        value: Администратор
+      - key: DATA_SOURCE
+        value: mock
+      - key: SIM_REALTIME
+        value: "true"
+      - key: APP_TIMEZONE
+        value: Asia/Almaty
+      - key: KITSHOP_ENABLED
+        value: "false"
