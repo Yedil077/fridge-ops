@@ -52,6 +52,8 @@ export interface Fridge {
   priority: 1 | 2 | 3;
   /** Fridges in the same proximity group are treated as "near" for routing. */
   proximityGroup: string | null;
+  /** Food may move ONLY between fridges with the same transfer group (e.g. SATTI, KABLAN_KANKORD). null = no transfers. */
+  transferGroup: string | null;
   location: string;
   locationType: LocationType;
   workingDays: Weekday[];
@@ -218,14 +220,24 @@ export type MissionStatus = "NEW" | "ACCEPTED" | "IN_PROGRESS" | "COMPLETED" | "
 export type MissionType = "URGENT" | "RESCUE" | "REBALANCE";
 /** What staff see instead of a score: 🔴 now · 🟡 today · 🟢 later */
 export type MissionUrgency = "NOW" | "TODAY" | "LATER";
+/**
+ * Forecast horizon chosen by the user:
+ *  • realtime — until the next check (~90 min): don't let a shelf go empty before the next round
+ *  • until20  — distribute stock against demand until 20:00 today
+ */
+export type ForecastMode = "realtime" | "until20";
 
 export interface MissionProduct {
   productId: string;
   name: string;
   sku: string;
   qty: number;
-  /** Actually moved (null until done). "Есть только 3" lowers it without counting as an error. */
+  /** Chosen at pick-up (may be less than qty — partial moves are normal). */
+  selectedQty?: number | null;
+  /** Actually delivered (null until done). */
   actualQty: number | null;
+  /** Optional reason when the dish was skipped: no_stock | not_needed | low_left | other */
+  skipReason?: string | null;
   /** Fridge × product affinity 0–100 at the target (why this dish goes there). */
   targetAffinity: number;
   sourceAffinity: number;
@@ -303,6 +315,10 @@ export interface Mission {
   priority: number;
   priorityLabel: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
   urgency: MissionUrgency;
+  /** Forecast horizon the mission was computed for. */
+  mode?: ForecastMode;
+  /** actual moved ÷ recommended (set on completion) — feeds transfer aggressiveness learning. */
+  acceptance?: number | null;
   /** A mission is a ROUTE: one pick-up fridge, one or more drop-off stops (ordered). */
   sourceFridgeId: string;
   /** First stop (kept for simple views). */

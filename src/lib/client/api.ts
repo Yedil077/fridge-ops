@@ -2,6 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Mission } from "@/lib/domain/types";
+import { useForecastMode } from "./forecastMode";
 import type { analyticsView, DashboardView, fridgeDetailView, historyView } from "@/lib/server/views";
 
 export type AnalyticsView = ReturnType<typeof analyticsView>;
@@ -63,7 +64,8 @@ export async function logout() {
 }
 
 export function useDashboard() {
-  return useQuery({ queryKey: ["dashboard"], queryFn: () => api<DashboardView>("/api/dashboard"), refetchInterval: 30_000 });
+  const [mode] = useForecastMode();
+  return useQuery({ queryKey: ["dashboard", mode], queryFn: () => api<DashboardView>(`/api/dashboard?mode=${mode}`), refetchInterval: 30_000 });
 }
 
 export function useFridge(id: string) {

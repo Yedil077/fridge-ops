@@ -2,16 +2,19 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { api } from "./api";
+import { useForecastMode } from "./forecastMode";
 import type { MobileFridge, MobileFridges, MobileHome, MobileRating, MobileRoute, MobileTasks } from "@/lib/server/mobile";
 
 export type { MobileFridge, MobileFridges, MobileHome, MobileRating, MobileRoute, MobileTasks };
 
 export function useMobileHome() {
-  return useQuery({ queryKey: ["m", "home"], queryFn: () => api<MobileHome>("/api/mobile/home"), refetchInterval: 30_000 });
+  const [mode] = useForecastMode();
+  return useQuery({ queryKey: ["m", "home", mode], queryFn: () => api<MobileHome>(`/api/mobile/home?mode=${mode}`), refetchInterval: 30_000 });
 }
 
 export function useMobileTasks() {
-  return useQuery({ queryKey: ["m", "tasks"], queryFn: () => api<MobileTasks>("/api/mobile/tasks"), refetchInterval: 30_000 });
+  const [mode] = useForecastMode();
+  return useQuery({ queryKey: ["m", "tasks", mode], queryFn: () => api<MobileTasks>(`/api/mobile/tasks?mode=${mode}`), refetchInterval: 30_000 });
 }
 
 export function useMobileTask(id: string) {

@@ -82,6 +82,7 @@ export interface FridgeSettings {
   location?: string;
   priority?: 1 | 2 | 3;
   proximityGroup?: string | null;
+  transferGroup?: string | null;
   workingDays?: Weekday[];
   openingMinute?: number;
   closingMinute?: number;

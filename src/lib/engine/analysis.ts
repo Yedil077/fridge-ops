@@ -1,4 +1,4 @@
-import type { DemandIndexRow, FridgeForecast, FridgePersonality, Mission, NetworkSnapshot } from "../domain/types";
+import type { DemandIndexRow, ForecastMode, FridgeForecast, FridgePersonality, Mission, NetworkSnapshot } from "../domain/types";
 import { biasKey, type LearningState } from "./feedback";
 import { forecastFridge } from "./forecast";
 import { buildContext, type EngineContext } from "./history";
@@ -43,11 +43,14 @@ export function reservationsFrom(missions: Mission[], snap: NetworkSnapshot): Re
   return out;
 }
 
-export function analyze(snap: NetworkSnapshot, learning: LearningState, activeMissions: Mission[]): AnalysisResult {
+export function analyze(snap: NetworkSnapshot, learning: LearningState, activeMissions: Mission[], mode: ForecastMode = "realtime"): AnalysisResult {
   const ctx = buildContext(snap, (f, c) => learning.forecastBias[biasKey(snap.fridges[f].id, snap.categories[c].id)] ?? 1);
   const forecasts = snap.fridges.map((_, f) => forecastFridge(ctx, f));
   const di = demandIndex(ctx);
-  const drafts = recommend(ctx, forecasts, reservationsFrom(activeMissions, snap), learning.pairStats);
+  const drafts = recommend(ctx, forecasts, reservationsFrom(activeMissions, snap), learning.pairStats, {
+    mode,
+    acceptance: learning.acceptance,
+  });
   return { ctx, forecasts, demandIndex: di, drafts };
 }
 

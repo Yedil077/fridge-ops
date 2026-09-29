@@ -16,6 +16,7 @@ interface AdminFridge {
   location: string;
   priority: 1 | 2 | 3;
   proximityGroup: string;
+  transferGroup: string;
   workingDays: number[];
   opening: string;
   closing: string;
@@ -43,6 +44,7 @@ export default function AdminPage() {
       <h1 className="text-[22px] font-semibold tracking-tight">Настройки</h1>
       <p className="mt-1 max-w-2xl text-[13px] text-ink-3">
         Имена, которые видят сотрудники. Внутренний ID источника данных (external_id) не меняется, поэтому переименовывать можно в любой момент.
+        Еда перемещается <b>только между холодильниками с одинаковой «группой перемещения»</b> (например, SATTI или KABLAN_KANKORD). Пустая группа — без перемещений.
       </p>
       {error && <p className="mt-4 text-crit-ink">{(error as Error).message}</p>}
       {data?.mode === "mock" && (
@@ -102,6 +104,7 @@ function FridgeRow({ f }: { f: AdminFridge }) {
           location: v.location,
           priority: v.priority,
           proximityGroup: v.proximityGroup,
+          transferGroup: v.transferGroup,
           workingDays: v.workingDays,
           opening: v.opening,
           closing: v.closing,
@@ -125,6 +128,15 @@ function FridgeRow({ f }: { f: AdminFridge }) {
         <label className="block">
           <span className="label">Короткое имя</span>
           <input className={clsx(input, "mt-1 w-full")} value={v.shortName} onChange={(e) => setV({ ...v, shortName: e.target.value })} />
+        </label>
+        <label className="block">
+          <span className="label">Группа перемещения</span>
+          <input
+            className={clsx(input, "mt-1 w-full font-mono uppercase")}
+            placeholder="SATTI"
+            value={v.transferGroup}
+            onChange={(e) => setV({ ...v, transferGroup: e.target.value })}
+          />
         </label>
         <label className="block">
           <span className="label">Зона близости</span>

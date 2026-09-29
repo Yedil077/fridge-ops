@@ -3,6 +3,7 @@
 import { MobileShell } from "@/components/mobile/MobileShell";
 import { RouteRow, SkeletonList, routeTargets } from "@/components/mobile/ui";
 import { useMobileTasks } from "@/lib/client/mobileApi";
+import { ModeToggle } from "@/lib/client/forecastMode";
 import { fmtClock } from "@/lib/client/format";
 
 export default function MobileTasksPage() {
@@ -10,6 +11,7 @@ export default function MobileTasksPage() {
   if (!data) return <MobileShell title="Задачи"><SkeletonList /></MobileShell>;
   return (
     <MobileShell title="Задачи" now={data.now}>
+      <ModeToggle className="mb-3" />
       {data.open.length === 0 ? (
         <div className="card p-6 text-center text-[15px] text-ink-2">Открытых задач нет. Система проверит холодильники через час.</div>
       ) : (

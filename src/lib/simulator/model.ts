@@ -86,6 +86,7 @@ export function buildModel(seed: number, anchorDay: number): SimModel {
     shortName: a.shortName ?? a.name ?? `Fridge ${a.code}`,
     priority: 2,
     proximityGroup: a.zone,
+    transferGroup: a.transferGroup ?? a.zone,
     location: a.location,
     locationType: a.locationType,
     workingDays: a.workingDays,

@@ -11,13 +11,15 @@ const PROGRESS_KEY = (id: string) => `fo-progress-${id}`;
 const OUTBOX_KEY = "fo-outbox";
 
 export interface RouteProgress {
-  /** "pick" → collecting at the source; "drop" → delivering to stop `stopIndex`; "done" */
-  phase: "pick" | "drop" | "done";
+  /** "pick" → choosing at the source; "summary" → confirm; "drop" → delivering to stop `stopIndex`; "done" */
+  phase: "pick" | "summary" | "drop" | "done";
   stopIndex: number;
-  /** checked items: key = `${lineIndex}:${productId}` */
-  checked: Record<string, boolean>;
-  /** actual quantities when the fridge had less ("Есть только N") */
-  actual: Record<string, number>;
+  /** chosen quantity per dish at pick-up (key = productId). Partial is normal. */
+  selected: Record<string, number>;
+  /** skipped dishes with an optional reason (key = productId) */
+  skipped: Record<string, string>;
+  /** delivered quantity per stop item (key = `${stopIndex}:${lineIndex}:${productId}`), default = allocated */
+  delivered: Record<string, number>;
   updatedAt: number;
 }
 
@@ -39,7 +41,9 @@ function safeSet(key: string, value: unknown) {
 }
 
 export function loadProgress(id: string): RouteProgress | null {
-  return safeGet<RouteProgress>(PROGRESS_KEY(id));
+  const p = safeGet<Partial<RouteProgress>>(PROGRESS_KEY(id));
+  if (!p || !p.selected) return null; // progress saved by an older app version — start fresh
+  return { phase: p.phase ?? "pick", stopIndex: p.stopIndex ?? 0, selected: p.selected, skipped: p.skipped ?? {}, delivered: p.delivered ?? {}, updatedAt: p.updatedAt ?? 0 };
 }
 
 export function saveProgress(id: string, p: RouteProgress) {

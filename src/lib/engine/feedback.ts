@@ -21,6 +21,7 @@ export function evaluateMission(m: Mission, snap: NetworkSnapshot, force = false
   if (m.status !== "COMPLETED" || m.completedAt === null || m.evaluation) return null;
   if (!force && !isDue(m, snap.now)) return null;
   if (dayNumber(m.completedAt) !== snap.today.day) return null;
+  if (m.lines.every((l) => (l.actualQty ?? 0) === 0)) return null; // nothing moved — nothing to learn
   const C = snap.categories.length;
   const qStart = Math.floor(minuteOfDay(m.completedAt) / 15);
   const qEnd = Math.min(QUARTERS, qStart + ENGINE_CONFIG.learning.evaluationWindowMinutes / 15, Math.floor(minuteOfDay(snap.now) / 15));
@@ -66,6 +67,8 @@ export function evaluateMission(m: Mission, snap: NetworkSnapshot, force = false
 export interface LearningState {
   forecastBias: Record<string, number>;
   pairStats: Record<string, PairStat>;
+  /** per source fridge (and "_all"): EWMA of moved ÷ recommended */
+  acceptance?: Record<string, { ratio: number; n: number }>;
 }
 
 export const biasKey = (fridgeId: string, categoryId: string) => `${fridgeId}:${categoryId}`;
@@ -73,6 +76,7 @@ export const biasKey = (fridgeId: string, categoryId: string) => `${fridgeId}:${
 export function applyLearning(state: LearningState, m: Mission, ev: MissionEvaluation): void {
   const L = ENGINE_CONFIG.learning;
   for (const l of ev.lines) {
+    if (l.moved === 0) continue; // skipped dish — no signal about demand
     const key = pairKey(m.sourceFridgeId, l.targetFridgeId ?? m.targetFridgeId, l.categoryId);
     const ps = state.pairStats[key] ?? { moved: 0, sold: 0, count: 0 };
     ps.moved += l.moved;

@@ -5,6 +5,7 @@ import clsx from "clsx";
 import { MobileShell } from "@/components/mobile/MobileShell";
 import { RouteRow, SkeletonList, UrgencyPill, URGENCY, plural, routeTargets } from "@/components/mobile/ui";
 import { useAlerts, useMobileHome } from "@/lib/client/mobileApi";
+import { ModeToggle } from "@/lib/client/forecastMode";
 
 export default function MobileHomePage() {
   const { data, error } = useMobileHome();
@@ -12,13 +13,20 @@ export default function MobileHomePage() {
   const alert = alerts.data?.notifications.find((n) => (alerts.data?.now ?? 0) - n.at < 60 * 60_000);
 
   if (error) return <MobileShell><p className="mt-10 text-center text-[15px] text-ink-2">{(error as Error).message}</p></MobileShell>;
-  if (!data) return <MobileShell><SkeletonList /></MobileShell>;
+  if (!data)
+    return (
+      <MobileShell>
+        <ModeToggle className="mb-3" />
+        <SkeletonList />
+      </MobileShell>
+    );
 
   const [top, ...rest] = data.routes;
   const mine = top && top.status !== "NEW";
 
   return (
     <MobileShell now={data.now}>
+      <ModeToggle className="mb-3" />
       <section className="grid grid-cols-3 gap-2">
         <Count dot="🟢" n={data.counts.normal} label="нормально" />
         <Count dot="🟡" n={data.counts.attention} label="внимание" />

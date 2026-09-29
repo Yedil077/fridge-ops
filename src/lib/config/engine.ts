@@ -61,8 +61,10 @@ export const ENGINE_CONFIG = {
   },
 
   transfer: {
-    /** Target is covered for this many hours (capped by time to close). */
-    targetCoverHours: 3,
+    /** REAL TIME mode: look this far ahead (≈ until the next check). */
+    realtimeHorizonMinutes: 90,
+    /** "ДО 20:00" mode: forecast until this minute of the day (capped by closing time). */
+    until20Minute: 20 * 60,
     /** Target may absorb up to this share of its expected sales until close. */
     absorbRatio: 0.8,
     /** Target must stay open at least this long after the transfer. */
@@ -90,6 +92,35 @@ export const ENGINE_CONFIG = {
     maxSourcesPerTarget: 2,
     extraSourceMinQty: 4,
     minPriority: 35,
+  },
+
+  /**
+   * Conservative distribution: "what is the SMALLEST move now that removes the empty-shelf risk
+   * while the source keeps a good assortment?" Small frequent adjustments, every hour.
+   */
+  conservative: {
+    /** Never leave fewer than this many units of a category in the source. */
+    minDisplayStock: { breakfast: 2, hot: 3, salad: 2, snack: 2, dessert: 2, drink: 2 },
+    /** Variety: keep at least 1 unit of every dish in the source (2 if it has ≥ plentyThreshold). */
+    minKeepPerProduct: 1,
+    minKeepPerProductWhenPlenty: 2,
+    plentyThreshold: 4,
+    /** Caps per recommendation (higher only for a CRITICAL shortage). */
+    maxPerProduct: 2,
+    maxPerProductCritical: 3,
+    maxPerCategory: 4,
+    maxPerCategoryCritical: 6,
+    /** One route should be easy to carry. */
+    maxItemsPerRoute: 12,
+    /** No move for a category with less expected demand than this in the forecast window. */
+    minDemandInWindow: 0.8,
+    /** Target runs empty within this many minutes → critical. */
+    criticalMinutes: 45,
+    /** Learning from what people actually move (acceptance = moved ÷ recommended). */
+    acceptanceMinMissions: 3,
+    acceptanceTarget: 0.8,
+    acceptanceFloor: 0.5,
+    acceptanceRate: 0.3,
   },
 
   priority: {

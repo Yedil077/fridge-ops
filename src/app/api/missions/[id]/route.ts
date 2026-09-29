@@ -14,6 +14,8 @@ const Body = z.discriminatedUnion("action", [
           lineIndex: z.number().int().min(0).max(50),
           productId: z.string().max(60),
           qty: z.number().int().min(0).max(200),
+          selectedQty: z.number().int().min(0).max(200).optional(),
+          skipReason: z.enum(["no_stock", "not_needed", "low_left", "other", "skipped"]).optional(),
           unavailable: z.boolean().optional(),
         }),
       )

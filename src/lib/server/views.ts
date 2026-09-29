@@ -1,6 +1,6 @@
 import "server-only";
 import { CATEGORIES } from "../domain/categories";
-import { QUARTERS, type FridgeForecast, type Mission, type NetworkSnapshot, type RiskState } from "../domain/types";
+import { QUARTERS, type ForecastMode, type FridgeForecast, type Mission, type NetworkSnapshot, type RiskState } from "../domain/types";
 import { personalities, type AnalysisResult } from "../engine/analysis";
 import { histDay, isWorkingDay, type EngineContext } from "../engine/history";
 import { dailyScore, levelInfo } from "../engine/scoring";
@@ -46,9 +46,13 @@ export function withNames(missions: Mission[], names: Record<string, string>): M
   }));
 }
 
-export function missionsView(state: AppState, day: number, names: Record<string, string> = {}) {
+/** NEW missions of the chosen mode + every mission already taken (a started route never disappears). */
+export const inMode = (m: Mission, mode: ForecastMode) =>
+  m.status === "ACCEPTED" || m.status === "IN_PROGRESS" || (m.status === "NEW" && (m.mode ?? "realtime") === mode);
+
+export function missionsView(state: AppState, day: number, names: Record<string, string> = {}, mode: ForecastMode = "realtime") {
   const open = state.missions
-    .filter((m) => m.status === "NEW" || m.status === "ACCEPTED" || m.status === "IN_PROGRESS")
+    .filter((m) => inMode(m, mode))
     .sort((a, b) => b.priority - a.priority);
   const recent = state.missions
     .filter((m) => (m.status === "COMPLETED" || m.status === "SKIPPED") && dayNumber(m.createdAt) === day)
@@ -59,7 +63,7 @@ export function missionsView(state: AppState, day: number, names: Record<string,
 
 const namesOf = (snap: NetworkSnapshot) => Object.fromEntries(snap.fridges.map((f) => [f.id, f.name]));
 
-export function dashboardView(snap: NetworkSnapshot, a: AnalysisResult, state: AppState, user: string, mode: string) {
+export function dashboardView(snap: NetworkSnapshot, a: AnalysisResult, state: AppState, user: string, mode: string, forecastMode: ForecastMode = "realtime") {
   const { forecasts } = a;
   const personas = personalities(a.ctx, a.demandIndex);
   const score = dailyScore(snap, forecasts, state.missions);
@@ -72,11 +76,12 @@ export function dashboardView(snap: NetworkSnapshot, a: AnalysisResult, state: A
   const health = openF.length ? openF.reduce((x, f) => x + f.health, 0) / openF.length : 1;
   const m = minuteOfDay(snap.now);
   const greeting = m < 12 * 60 ? "Доброе утро" : m < 18 * 60 ? "Добрый день" : "Добрый вечер";
-  const missions = missionsView(state, snap.today.day, namesOf(snap));
+  const missions = missionsView(state, snap.today.day, namesOf(snap), forecastMode);
 
   return {
     now: snap.now,
     mode,
+    forecastMode,
     greeting,
     network: {
       fridgesTotal: snap.fridges.length,
@@ -286,9 +291,28 @@ export function analyticsView(snap: NetworkSnapshot, a: AnalysisResult, state: A
   const byStatus = { NEW: 0, ACCEPTED: 0, IN_PROGRESS: 0, COMPLETED: 0, SKIPPED: 0, EXPIRED: 0 } as Record<Mission["status"], number>;
   for (const m of state.missions) byStatus[m.status]++;
 
+  // recommendation acceptance: how much of what the system recommends people really move
+  const withAcc = done.filter((m) => m.acceptance !== null && m.acceptance !== undefined);
+  const recTotal = withAcc.reduce((x, m) => x + m.lines.reduce((y, l) => y + l.recommendedQty, 0), 0);
+  const movedTotal = withAcc.reduce((x, m) => x + m.lines.reduce((y, l) => y + (l.actualQty ?? 0), 0), 0);
+  const skipReasons: Record<string, number> = {};
+  for (const m of state.missions)
+    for (const l of m.lines) for (const p of l.products) if (p.skipReason) skipReasons[p.skipReason] = (skipReasons[p.skipReason] ?? 0) + 1;
+  const acceptance = {
+    ratio: recTotal ? movedTotal / recTotal : null,
+    recommended: recTotal,
+    moved: movedTotal,
+    bySource: Object.entries(state.learning.acceptance ?? {})
+      .filter(([k]) => k !== "_all")
+      .map(([id, v]) => ({ name: names[id] ?? id, ratio: v.ratio, n: v.n }))
+      .sort((x, y) => x.ratio - y.ratio),
+    skipReasons,
+  };
+
   return {
     now: snap.now,
     weekdayName: weekdayPlural(todayWd),
+    acceptance,
     byFridge,
     byCategory,
     hourly,

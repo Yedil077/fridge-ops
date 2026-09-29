@@ -1,6 +1,6 @@
 import "server-only";
 import { ENGINE_CONFIG } from "../config/engine";
-import type { Mission, NetworkSnapshot } from "../domain/types";
+import type { ForecastMode, Mission, NetworkSnapshot } from "../domain/types";
 import { analyze, type AnalysisResult } from "../engine/analysis";
 import { buildTravelMatrix } from "../engine/distance";
 import { applyLearning, evaluateMission, isDue } from "../engine/feedback";
@@ -19,10 +19,17 @@ import { KitShopDataSource } from "@/services/kitshop";
 export interface CompleteItem {
   lineIndex: number;
   productId: string;
+  /** actually delivered */
   qty: number;
+  /** chosen at pick-up (partial is normal) */
+  selectedQty?: number;
+  /** optional: no_stock | not_needed | low_left | other */
+  skipReason?: string;
   /** "Есть только N" — the fridge physically had less; not the employee's fault. */
   unavailable?: boolean;
 }
+
+export const FORECAST_MODES: ForecastMode[] = ["realtime", "until20"];
 
 export type MissionAction =
   | { action: "accept" }
@@ -50,7 +57,7 @@ class Runtime {
   sim: Simulator | null = null;
   readonly mode: "mock" | "kitshop";
   readonly store: StateStore;
-  private cache: { key: string; result: AnalysisResult } | null = null;
+  private cache = new Map<ForecastMode, { key: string; result: AnalysisResult }>();
   private kitshop = new KitShopDataSource();
   private saving: Promise<void> | null = null;
   private dirty = false;
@@ -131,7 +138,7 @@ class Runtime {
       if (behind > 36 * 60) {
         this.sim = Simulator.create(this.sim.state.seed, dayNumber(target), minuteOfDay(target) - (minuteOfDay(target) % 15));
         this.state.sim = this.sim.state;
-        this.cache = null;
+        this.cache.clear();
         this.runHourlySync();
         this.save();
       } else {
@@ -159,6 +166,7 @@ class Runtime {
         location: o.location?.trim() || f.location,
         priority: o.priority ?? f.priority,
         proximityGroup: o.proximityGroup === undefined ? f.proximityGroup : o.proximityGroup,
+        transferGroup: o.transferGroup === undefined ? f.transferGroup : o.transferGroup,
         workingDays: o.workingDays?.length ? o.workingDays : f.workingDays,
         openingMinute: o.openingMinute ?? f.openingMinute,
         closingMinute: o.closingMinute ?? f.closingMinute,
@@ -186,18 +194,20 @@ class Runtime {
     return this.state.missions.filter((m) => m.status === "ACCEPTED" || m.status === "IN_PROGRESS");
   }
 
-  private analysisFor(snap: NetworkSnapshot): AnalysisResult {
+  /** The selected forecast horizon really changes the engine (REAL TIME vs ДО 20:00). */
+  private analysisFor(snap: NetworkSnapshot, mode: ForecastMode = "realtime"): AnalysisResult {
     const active = this.activeMissions();
     const key = `${snap.version}|${JSON.stringify(this.state.learning).length}|${active.map((m) => m.id + m.status).join(",")}`;
-    if (this.cache?.key === key) return this.cache.result;
-    const result = analyze(snap, this.state.learning, active);
-    this.cache = { key, result };
+    const hit = this.cache.get(mode);
+    if (hit?.key === key) return hit.result;
+    const result = analyze(snap, this.state.learning, active, mode);
+    this.cache.set(mode, { key, result });
     return result;
   }
 
-  async analysis(): Promise<{ snap: NetworkSnapshot; result: AnalysisResult }> {
+  async analysis(mode: ForecastMode = "realtime"): Promise<{ snap: NetworkSnapshot; result: AnalysisResult }> {
     const snap = await this.snapshot();
-    return { snap, result: this.analysisFor(snap) };
+    return { snap, result: this.analysisFor(snap, mode) };
   }
 
   /** Current display names (Admin can rename fridges at any time). */
@@ -210,20 +220,21 @@ class Runtime {
   private runHourlySync(): Mission[] {
     if (!this.sim) return [];
     const snap = this.simSnapshot();
-    return this.createMissions(snap, this.analysisFor(snap));
+    return this.createMissions(snap);
   }
 
   async runHourly(): Promise<Mission[]> {
-    const { snap, result } = await this.analysis();
-    const created = this.createMissions(snap, result);
+    const snap = await this.snapshot();
+    const created = this.createMissions(snap);
     this.save();
     return created;
   }
 
-  /** Replaces untouched NEW missions with the fresh top list. */
-  private createMissions(snap: NetworkSnapshot, result: AnalysisResult): Mission[] {
+  /** Replaces untouched NEW missions with the fresh top list — one list per forecast mode. */
+  private createMissions(snap: NetworkSnapshot): Mission[] {
     for (const m of this.state.missions) if (m.status === "NEW") m.status = "EXPIRED";
-    const created: Mission[] = result.drafts.map((d) => {
+    const drafts = FORECAST_MODES.flatMap((mode) => this.analysisFor(snap, mode).drafts);
+    const created: Mission[] = drafts.map((d) => {
       this.state.missionSeq += 1;
       return {
         ...d,
@@ -240,6 +251,7 @@ class Runtime {
         skippedAt: null,
         skipReason: null,
         evaluation: null,
+        acceptance: null,
         xpAwarded: 0,
         pointsAwarded: 0,
       };
@@ -247,7 +259,7 @@ class Runtime {
     this.state.missions.push(...created);
     this.state.lastAnalysisAt = snap.now;
     // important alerts only (future push notifications)
-    for (const n of detectAlerts(snap, result, this.state, created)) {
+    for (const n of detectAlerts(snap, this.analysisFor(snap, "realtime"), this.state, created)) {
       this.state.notifications.push(n);
       void deliver(n, this.state.devices).then(() => this.save());
     }
@@ -259,7 +271,7 @@ class Runtime {
     const snap = await this.snapshot();
     const last = this.state.lastAnalysisAt;
     if (last === null || snap.now - last >= ENGINE_CONFIG.analysisIntervalMinutes * MINUTE_MS || dayNumber(last) !== dayNumber(snap.now)) {
-      this.createMissions(snap, this.analysisFor(snap));
+      this.createMissions(snap);
       this.save();
     }
   }
@@ -415,7 +427,7 @@ class Runtime {
       case "complete": {
         if (m.status !== "ACCEPTED" && m.status !== "IN_PROGRESS" && m.status !== "NEW")
           throw new HttpError(409, "Задача уже закрыта");
-        const result = this.analysisFor(snap);
+        const result = this.analysisFor(snap, m.mode ?? "realtime");
         const fIdx = new Map(snap.fridges.map((f, i) => [f.id, i]));
         const pIdx = new Map(snap.products.map((p, i) => [p.id, i]));
         const s = fIdx.get(m.sourceFridgeId) ?? -1;
@@ -435,10 +447,14 @@ class Runtime {
           for (const p of line.products) {
             const item = a.items?.find((x) => x.lineIndex === li && x.productId === p.productId);
             let actual = p.qty;
-            if (item) actual = Math.max(0, Math.round(item.qty));
+            if (a.items) actual = item ? Math.max(0, Math.round(item.qty)) : 0; // mobile checklist: only what was chosen
             else if (catQty !== undefined && line.recommendedQty > 0) actual = Math.round((p.qty * catQty) / line.recommendedQty);
-            if (actual !== p.qty && !item?.unavailable) perfect = false;
+            const selected = item?.selectedQty ?? actual;
+            // taking less than recommended is NORMAL; "perfect" = delivered exactly what was picked up
+            if (actual !== selected) perfect = false;
+            p.selectedQty = selected;
             p.actualQty = actual;
+            p.skipReason = item?.skipReason?.slice(0, 40) ?? (actual === 0 ? "skipped" : null);
           }
           let moved = line.products.reduce((acc, p) => acc + (p.actualQty ?? 0), 0);
           if (this.mode === "mock" && this.sim && s >= 0 && t >= 0) {
@@ -453,10 +469,32 @@ class Runtime {
           savedSales += Math.min(moved, line.expectedShortage);
           wasteReduced += Math.min(moved, Math.round(line.sourceWasteUnits));
         });
-        for (const stop of m.stops) stop.deliveredAt = stop.deliveredAt ?? now;
+        const recommendedTotal = m.lines.reduce((acc, l) => acc + l.recommendedQty, 0);
+        const movedTotal = m.lines.reduce((acc, l) => acc + (l.actualQty ?? 0), 0);
         if (!m.acceptedAt) {
           m.acceptedAt = now;
           m.acceptedBy = user;
+        }
+        // acceptance learning: how much of the recommendation people really move (per source + network)
+        m.acceptance = recommendedTotal > 0 ? movedTotal / recommendedTotal : null;
+        if (m.acceptance !== null) {
+          const K = ENGINE_CONFIG.conservative;
+          const table = (this.state.learning.acceptance ??= {});
+          for (const key of [m.sourceFridgeId, "_all"]) {
+            const cur = table[key] ?? { ratio: 1, n: 0 };
+            table[key] = { ratio: cur.n === 0 ? m.acceptance : cur.ratio * (1 - K.acceptanceRate) + m.acceptance * K.acceptanceRate, n: cur.n + 1 };
+          }
+        }
+        if (movedTotal === 0) {
+          // nothing moved → the route was skipped, not completed (no XP, no evaluation)
+          m.status = "SKIPPED";
+          m.skippedAt = now;
+          m.skipReason = "ничего не перенесли";
+          break;
+        }
+        for (const stop of m.stops) {
+          const delivered = m.lines.some((l) => l.targetFridgeId === stop.targetFridgeId && (l.actualQty ?? 0) > 0);
+          if (delivered) stop.deliveredAt = stop.deliveredAt ?? now;
         }
         m.status = "COMPLETED";
         m.completedAt = now;
@@ -465,7 +503,7 @@ class Runtime {
         xp.push(this.award(user, X.missionCompleted, 0, "Задача выполнена", m.id));
         if (m.type === "URGENT") xp.push(this.award(user, X.urgentBonus, 0, "Срочная задача", m.id));
         if (perfect) xp.push(this.award(user, X.perfectQuantity, 0, "Точное количество", m.id));
-        const fullRoute = m.stops.length >= 2 && m.lines.every((l) => (l.actualQty ?? 0) > 0);
+        const fullRoute = m.stops.length >= 2 && m.stops.every((st) => st.deliveredAt !== null);
         if (fullRoute) xp.push(this.award(user, X.fullRoute, 0, "Маршрут пройден полностью", m.id));
         const p = this.player(user);
         p.counters.perfectRoutesInRow = perfect ? p.counters.perfectRoutesInRow + 1 : 0;
@@ -496,7 +534,7 @@ class Runtime {
     const cur = this.state.fridgeSettings[id] ?? {};
     this.state.fridgeSettings[id] = { ...cur, ...patch };
     this.state.settingsVersion += 1;
-    this.cache = null;
+    this.cache.clear();
     this.save();
     return this.state.fridgeSettings[id];
   }
@@ -506,7 +544,7 @@ class Runtime {
     if (minutes === null) delete this.state.travelOverrides[key];
     else this.state.travelOverrides[key] = minutes;
     this.state.settingsVersion += 1;
-    this.cache = null;
+    this.cache.clear();
     this.save();
   }
 
@@ -535,7 +573,7 @@ class Runtime {
       const snap = this.simSnapshot();
       this.evaluateDue(snap);
       if (minuteOfDay(snap.now) % ENGINE_CONFIG.analysisIntervalMinutes === 0) {
-        created += this.createMissions(snap, this.analysisFor(snap)).length;
+        created += this.createMissions(snap).length;
       }
     }
     this.save();
@@ -590,7 +628,7 @@ class Runtime {
         };
         this.sim = Simulator.create(seed, dayNumber(wallClockNow(TZ)));
         this.state.sim = this.sim.state;
-        this.cache = null;
+        this.cache.clear();
         this.runHourlySync();
         this.save();
         return `Новый мир (seed ${seed})`;

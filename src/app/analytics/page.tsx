@@ -176,6 +176,37 @@ function Missions({ d }: { d: AnalyticsView }) {
   const m = d.missions;
   return (
     <div className="grid gap-4 lg:grid-cols-3">
+      <div className="card p-4 lg:col-span-3">
+        <div className="label mb-2">Recommendation acceptance</div>
+        <div className="flex flex-wrap items-baseline gap-x-8 gap-y-2">
+          <div>
+            <span className="num text-[28px] font-semibold">{d.acceptance.ratio === null ? "—" : pct(d.acceptance.ratio)}</span>
+            <span className="ml-2 text-[13px] text-ink-3">
+              перенесено {d.acceptance.moved} из {d.acceptance.recommended} рекомендованных
+            </span>
+          </div>
+          {Object.keys(d.acceptance.skipReasons).length > 0 && (
+            <div className="text-[12px] text-ink-3">
+              Пропуски:{" "}
+              {Object.entries(d.acceptance.skipReasons).map(([k, v]) => (
+                <span key={k} className="mr-3">
+                  {({ no_stock: "нет в наличии", not_needed: "не хочу переносить", low_left: "мало осталось", other: "другое", skipped: "без причины" } as Record<string, string>)[k] ?? k}: {v}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+        {d.acceptance.bySource.length > 0 && (
+          <div className="mt-3 flex flex-wrap gap-2 text-[12px]">
+            {d.acceptance.bySource.map((s) => (
+              <span key={s.name} className={clsx("rounded-lg border px-2 py-1", s.ratio < 0.6 ? "border-warn/40 text-warn" : "border-line text-ink-2")}>
+                {s.name}: {pct(s.ratio)} <span className="text-ink-3">({s.n})</span>
+              </span>
+            ))}
+          </div>
+        )}
+        <p className="mt-2 text-[12px] text-ink-3">Если по точке берут стабильно меньше рекомендованного, система сама уменьшает объёмы для неё.</p>
+      </div>
       <div className="card grid grid-cols-2 gap-4 p-4 lg:col-span-3 lg:grid-cols-5">
         <Metric label="Выполнено" value={String(m.byStatus.COMPLETED)} />
         <Metric label="Оценено" value={String(m.evaluated)} />

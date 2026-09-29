@@ -2,6 +2,7 @@ import { ENGINE_CONFIG } from "../config/engine";
 import type {
   CategoryForecast,
   ExplanationLine,
+  ForecastMode,
   FridgeForecast,
   Mission,
   MissionLine,
@@ -39,6 +40,22 @@ export interface PairStat {
   count: number;
 }
 
+export interface RecommendOptions {
+  mode: ForecastMode;
+  /** learned acceptance per source fridge id (moved / recommended) */
+  acceptance?: Record<string, { ratio: number; n: number }>;
+}
+
+/** End of the forecast window for a fridge in the chosen mode (minutes of the day). */
+export function horizonEnd(mode: ForecastMode, openingMinute: number, closingMinute: number, nowMinute: number): number {
+  const T = ENGINE_CONFIG.transfer;
+  const from = Math.max(nowMinute, openingMinute);
+  const realtime = Math.min(closingMinute, from + T.realtimeHorizonMinutes);
+  if (mode === "realtime") return realtime;
+  const until = Math.min(closingMinute, T.until20Minute);
+  return until > from ? until : realtime;
+}
+
 export type MissionDraft = Pick<
   Mission,
   | "type"
@@ -46,6 +63,7 @@ export type MissionDraft = Pick<
   | "priority"
   | "priorityLabel"
   | "urgency"
+  | "mode"
   | "sourceFridgeId"
   | "targetFridgeId"
   | "stops"
@@ -77,6 +95,8 @@ const CAT_GEN: Record<string, string> = {
 };
 
 interface Slot {
+  /** target would run empty within criticalMinutes */
+  critical: boolean;
   deficit: number;
   capacity: number;
   surplus: number;
@@ -102,8 +122,9 @@ function priorityLabel(p: number): Mission["priorityLabel"] {
 const r1 = (v: number) => (Math.round(v * 10) / 10).toString().replace(".", ",");
 const rng = (a: [number, number]) => (a[0] === a[1] ? `${a[0]}` : `${a[0]}–${a[1]}`);
 
-export function buildSlots(ctx: EngineContext, forecasts: FridgeForecast[], reservations: Reservation[]): Slot[][] {
+export function buildSlots(ctx: EngineContext, forecasts: FridgeForecast[], reservations: Reservation[], mode: ForecastMode = "realtime"): Slot[][] {
   const T = ENGINE_CONFIG.transfer;
+  const K = ENGINE_CONFIG.conservative;
   const inbound = forecasts.map(() => new Array<number>(ctx.C).fill(0));
   const outbound = forecasts.map(() => new Array<number>(ctx.C).fill(0));
   for (const r of reservations) {
@@ -115,18 +136,28 @@ export function buildSlots(ctx: EngineContext, forecasts: FridgeForecast[], rese
       const fr = ctx.snap.fridges[f];
       const targetEligible = ff.isOpenNow && ff.minutesToClose >= T.minTargetOpenMinutes;
       const sourceEligible = ff.isOpenNow || (T.allowClosedSource && ff.isWorkingToday);
-      const coverMin = Math.min(T.targetCoverHours * 60, ff.minutesToClose);
       const nowFrom = Math.max(ctx.nowMinute, fr.openingMinute);
-      const cover = sumWindow(cf.forecastHourly, nowFrom, nowFrom + coverMin);
+      // forecast window depends on the mode: REAL TIME = until the next check, ДО 20:00 = until 20:00
+      const end = horizonEnd(mode, fr.openingMinute, fr.closingMinute, ctx.nowMinute);
+      const cover = sumWindow(cf.forecastHourly, nowFrom, end);
       const stockIn = cf.stock + inbound[f][c];
-      const deficit = targetEligible ? Math.max(0, Math.ceil(cover + cf.safetyStock - stockIn)) : 0;
-      const capacity = targetEligible ? Math.max(0, Math.floor(T.absorbRatio * cf.expectedUntilClose - stockIn)) : 0;
-      // source keeps enough for the next check + safety, or its (upper) expected sales until close
-      const upperClose = cf.expectedUntilClose + (1 - cf.confidence) * (cf.intervalClose[1] - cf.expectedUntilClose);
-      const keep = Math.max(cf.expected2h + cf.safetyStock, upperClose * T.sourceKeepCloseRatio);
+      // no demand in the window → nothing to bring (safety stock alone must not trigger moves)
+      const demandOk = cover >= K.minDemandInWindow;
+      const deficit = targetEligible && demandOk ? Math.max(0, Math.ceil(cover + cf.safetyStock - stockIn)) : 0;
+      const capacity = targetEligible && demandOk ? Math.max(0, Math.floor(T.absorbRatio * cover - stockIn)) : 0;
+      // source keeps expected sales in the same window (upper estimate) + safety, never below the display minimum
+      const upperCover = cover * (1 + (1 - cf.confidence) * 0.5);
+      const minDisplay = K.minDisplayStock[ctx.snap.categories[c].id];
+      const keep = Math.max(
+        upperCover + cf.safetyStock,
+        minDisplay,
+        // REAL TIME looks only ~90 min ahead: also keep half of the rest-of-day demand
+        mode === "realtime" ? 0.5 * cf.expectedUntilClose : 0,
+      );
       const surplus = sourceEligible ? Math.max(0, Math.floor(cf.stock - outbound[f][c] - keep)) : 0;
       const waste = sourceEligible ? Math.max(0, cf.wasteUnits - outbound[f][c] * ctx.snap.categories[c].wasteShare[ff.isWorkingTomorrow ? 0 : 1]) : 0;
-      return { deficit, capacity, surplus, waste, keep, cover, inbound: inbound[f][c], outbound: outbound[f][c] };
+      const critical = targetEligible && cf.expected2h >= 1 && cf.minutesToEmpty !== null && cf.minutesToEmpty <= K.criticalMinutes;
+      return { critical, deficit, capacity, surplus, waste, keep, cover, inbound: inbound[f][c], outbound: outbound[f][c] };
     }),
   );
 }
@@ -168,9 +199,16 @@ function allocateProducts(
   const tgt = slots[t][c];
   const tf = forecasts[t].categories[c];
   const T = ENGINE_CONFIG.transfer;
-  const surplus = prods.map((p) =>
-    Math.floor(ctx.snap.stock[s * P + p] - ledger.taken[s * P + p] - src.keep * pm.share[s * P + p]),
-  );
+  const K = ENGINE_CONFIG.conservative;
+  const critical = tgt.critical;
+  // VARIETY: the source keeps at least 1-2 of every dish; last units move only for a critical shortage
+  const minKeep = (stock: number) =>
+    stock <= 0 ? 0 : critical ? 1 : stock >= K.plentyThreshold ? K.minKeepPerProductWhenPlenty : K.minKeepPerProduct;
+  const perProductCap = critical ? K.maxPerProductCritical : K.maxPerProduct;
+  const surplus = prods.map((p) => {
+    const stock = ctx.snap.stock[s * P + p] - ledger.taken[s * P + p];
+    return Math.min(perProductCap, Math.floor(stock - Math.max(src.keep * pm.share[s * P + p], minKeep(stock))));
+  });
   const want = prods.map((p) => {
     const sh = pm.share[t * P + p];
     const have = ctx.snap.stock[t * P + p] + ledger.sent[t * P + p];
@@ -186,7 +224,8 @@ function allocateProducts(
     prods.forEach((p, k) => {
       const room = Math.min(surplus[k], want[k]) - alloc[k];
       if (room <= 0) return;
-      const score = (want[k] - alloc[k]) * (0.5 + pm.affinity[t * P + p] / 100);
+      // spread across dishes (1 pasta + 1 plov + 1 chicken beats 3 pasta), prefer what sells at the target
+      const score = ((want[k] - alloc[k]) * (0.5 + pm.affinity[t * P + p] / 100)) / (alloc[k] + 1) ** 2;
       if (score > bestScore) {
         bestScore = score;
         best = k;
@@ -222,9 +261,11 @@ function evaluateCandidate(
   s: number,
   t: number,
   c: number,
+  opts: RecommendOptions,
 ): Candidate | null {
   const T = ENGINE_CONFIG.transfer;
   const W = ENGINE_CONFIG.priority;
+  const K = ENGINE_CONFIG.conservative;
   const src = slots[s][c];
   const tgt = slots[t][c];
   if (src.surplus <= 0) return null;
@@ -237,8 +278,12 @@ function evaluateCandidate(
   const want = Math.max(tgt.deficit, rescueQty);
   if (want <= 0) return null;
   const tf = forecasts[t].categories[c];
-  let qty = Math.min(src.surplus, want);
+  // SMALL FREQUENT ADJUSTMENTS: the smallest useful move now, capped; the next hourly check continues
+  let qty = Math.min(src.surplus, want, tgt.critical ? K.maxPerCategoryCritical : K.maxPerCategory);
   qty = Math.floor(qty * (T.confidenceFloor + (1 - T.confidenceFloor) * tf.confidence));
+  // learn from people: if they usually move less than recommended from this source, recommend less
+  const acc = opts.acceptance?.[ctx.snap.fridges[s].id];
+  if (acc && acc.n >= K.acceptanceMinMissions) qty = Math.floor(qty * Math.min(1, Math.max(K.acceptanceFloor, acc.ratio / K.acceptanceTarget)));
   if (qty < T.minQty) return null;
   const products = allocateProducts(ctx, pm, forecasts, slots, ledger, s, t, c, qty, rescueMode && tgt.deficit < qty);
   qty = products.reduce((a, x) => a + x.qty, 0);
@@ -469,10 +514,11 @@ export function recommend(
   forecasts: FridgeForecast[],
   reservations: Reservation[],
   pairStats: Record<string, PairStat>,
+  opts: RecommendOptions = { mode: "realtime" },
 ): MissionDraft[] {
   const T = ENGINE_CONFIG.transfer;
   const pm = productModel(ctx);
-  const slots = buildSlots(ctx, forecasts, reservations);
+  const slots = buildSlots(ctx, forecasts, reservations, opts.mode);
   const ledger: ProductLedger = { taken: new Float64Array(ctx.F * ctx.P), sent: new Float64Array(ctx.F * ctx.P) };
   for (const r of reservations)
     for (const p of r.products ?? []) {
@@ -485,6 +531,7 @@ export function recommend(
   const blockedAsTarget = new Set<string>();
   const stopsBySource = new Map<number, Set<number>>();
   const targetSources = new Map<string, number>(); // "t:c" → number of sources
+  const routeItems = new Map<number, number>(); // source → items already in its route
 
   for (let iter = 0; iter < 60; iter++) {
     let best: Candidate | null = null;
@@ -495,12 +542,16 @@ export function recommend(
         if (slots[t][c].deficit <= 0 && slots[t][c].capacity <= 0) continue;
         for (let s = 0; s < ctx.F; s++) {
           if (s === t || blockedAsSource.has(`${s}:${c}`) || blockedAsTarget.has(`${s}:${c}`)) continue;
+          // TRANSFER GROUPS first: food never moves between groups (e.g. SATTI -> KABLAN is not allowed)
+          const gs = ctx.snap.fridges[s].transferGroup;
+          if (!gs || gs !== ctx.snap.fridges[t].transferGroup) continue;
           const stops = stopsBySource.get(s);
           if (!stops) {
             if (stopsBySource.size >= T.maxRoutes) continue;
           } else if (!stops.has(t) && stops.size >= T.maxStopsPerRoute) continue;
-          const cand = evaluateCandidate(ctx, pm, forecasts, slots, ledger, pairStats, s, t, c);
+          const cand = evaluateCandidate(ctx, pm, forecasts, slots, ledger, pairStats, s, t, c, opts);
           if (!cand) continue;
+          if ((routeItems.get(s) ?? 0) + cand.qty > ENGINE_CONFIG.conservative.maxItemsPerRoute) continue;
           const fed = targetSources.get(`${t}:${c}`) ?? 0;
           if (fed >= T.maxSourcesPerTarget || (fed > 0 && cand.qty < T.extraSourceMinQty)) continue;
           if (stops && !stops.has(t)) {
@@ -535,12 +586,13 @@ export function recommend(
     blockedAsSource.add(`${best.t}:${best.c}`);
     blockedAsTarget.add(`${best.s}:${best.c}`);
     targetSources.set(`${best.t}:${best.c}`, (targetSources.get(`${best.t}:${best.c}`) ?? 0) + 1);
+    routeItems.set(best.s, (routeItems.get(best.s) ?? 0) + best.qty);
     if (!stopsBySource.has(best.s)) stopsBySource.set(best.s, new Set());
     stopsBySource.get(best.s)!.add(best.t);
   }
 
   // explanations describe the state before this analysis' picks
-  const baseSlots = buildSlots(ctx, forecasts, reservations);
+  const baseSlots = buildSlots(ctx, forecasts, reservations, opts.mode);
   const drafts: MissionDraft[] = [];
   for (const [s, targets] of stopsBySource) {
     const cands = chosen.filter((x) => x.s === s);
@@ -580,6 +632,7 @@ export function recommend(
       priority,
       priorityLabel: priorityLabel(priority),
       urgency: type === "URGENT" ? "NOW" : urgencyOf(priority, tf.minutesToEmpty),
+      mode: opts.mode,
       sourceFridgeId: srcF.id,
       targetFridgeId: stops[0].targetFridgeId,
       stops,

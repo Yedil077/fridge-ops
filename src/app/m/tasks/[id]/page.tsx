@@ -10,7 +10,11 @@ import { useMobileTask, type MobileRoute } from "@/lib/client/mobileApi";
 import type { CompletionImpact, MissionActionResult, XpGain } from "@/lib/client/api";
 import { clearProgress, loadProgress, saveProgress, sendOrQueue, type RouteProgress } from "@/lib/client/offline";
 
-type Item = MobileRoute["stops"][number]["items"][number];
+/**
+ * Route execution on the phone. Recommendations are a WISH, not an order:
+ * the employee chooses how many of each dish to take (0…recommended), can skip any dish,
+ * and continues with a partial choice. Only what was chosen is shown at the drop-off stops.
+ */
 
 interface PickItem {
   productId: string;
@@ -21,6 +25,13 @@ interface PickItem {
   categoryName: string;
   planned: number;
 }
+
+const SKIP_REASONS: { id: string; label: string }[] = [
+  { id: "no_stock", label: "Нет в наличии" },
+  { id: "not_needed", label: "Не хочу переносить" },
+  { id: "low_left", label: "Мало осталось" },
+  { id: "other", label: "Другое" },
+];
 
 /** Same dish for several stops is picked once: aggregate by product. */
 function pickList(r: MobileRoute): PickItem[] {
@@ -34,10 +45,10 @@ function pickList(r: MobileRoute): PickItem[] {
   return [...map.values()];
 }
 
-/** If the fridge had less of a dish, earlier stops get it first. Returns actual qty per stop item. */
-function distribute(r: MobileRoute, actual: Record<string, number>): Map<string, number> {
+/** Splits the chosen quantity of each dish over the stops (earlier stops first). key = `${stop}:${line}:${product}` */
+function distribute(r: MobileRoute, selected: Record<string, number>): Map<string, number> {
   const left = new Map<string, number>();
-  for (const p of pickList(r)) left.set(p.productId, actual[p.productId] ?? p.planned);
+  for (const p of pickList(r)) left.set(p.productId, selected[p.productId] ?? 0);
   const out = new Map<string, number>();
   r.stops.forEach((s, si) =>
     s.items.forEach((i) => {
@@ -50,13 +61,15 @@ function distribute(r: MobileRoute, actual: Record<string, number>): Map<string,
   return out;
 }
 
+const emptyProgress = (): RouteProgress => ({ phase: "pick", stopIndex: 0, selected: {}, skipped: {}, delivered: {}, updatedAt: Date.now() });
+
 export default function TaskPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const { data, error } = useMobileTask(id);
   const qc = useQueryClient();
   const [progress, setProgress] = useState<RouteProgress | null>(null);
   const [details, setDetails] = useState(false);
-  const [result, setResult] = useState<{ xp: XpGain[]; impact?: CompletionImpact; queued?: boolean } | null>(null);
+  const [result, setResult] = useState<{ xp: XpGain[]; impact?: CompletionImpact; queued?: boolean; skipped?: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -79,7 +92,7 @@ export default function TaskPage({ params }: { params: Promise<{ id: string }> }
 
   async function start() {
     setErr(null);
-    update({ phase: "pick", stopIndex: 0, checked: {}, actual: {}, updatedAt: Date.now() });
+    update(progress ?? emptyProgress());
     try {
       await sendOrQueue(`/api/missions/${r.id}`, "PATCH", { action: "start" });
     } catch (e) {
@@ -87,21 +100,32 @@ export default function TaskPage({ params }: { params: Promise<{ id: string }> }
     }
   }
 
+  /** Sends what really happened: chosen and delivered quantities per dish, optional skip reasons. */
   async function finish(p: RouteProgress) {
     setBusy(true);
     setErr(null);
-    const dist = distribute(r, p.actual);
+    const dist = distribute(r, p.selected);
     const items = r.stops.flatMap((s, si) =>
       s.items.map((i) => {
-        const q = dist.get(`${si}:${i.lineIndex}:${i.productId}`) ?? i.qty;
-        return { lineIndex: i.lineIndex, productId: i.productId, qty: q, unavailable: q < i.qty };
+        const key = `${si}:${i.lineIndex}:${i.productId}`;
+        const selectedQty = dist.get(key) ?? 0;
+        const qty = Math.min(selectedQty, p.delivered[key] ?? selectedQty);
+        const reason = p.skipped[i.productId];
+        return {
+          lineIndex: i.lineIndex,
+          productId: i.productId,
+          qty,
+          selectedQty,
+          ...(qty === 0 ? { skipReason: SKIP_REASONS.some((x) => x.id === reason) ? reason : "skipped" } : {}),
+        };
       }),
     );
     try {
       const res = await sendOrQueue<MissionActionResult>(`/api/missions/${r.id}`, "PATCH", { action: "complete", items });
       clearProgress(r.id);
-      if (res.queued) setResult({ xp: [], queued: true });
-      else setResult({ xp: res.data.xp, impact: res.data.impact });
+      const moved = items.reduce((a, x) => a + x.qty, 0);
+      if (res.queued) setResult({ xp: [], queued: true, skipped: moved === 0 });
+      else setResult({ xp: res.data.xp, impact: res.data.impact, skipped: moved === 0 });
       qc.invalidateQueries();
     } catch (e) {
       setErr((e as Error).message);
@@ -124,15 +148,13 @@ export default function TaskPage({ params }: { params: Promise<{ id: string }> }
         <div className="label">Откуда</div>
         <div className="mt-1 text-[26px] font-bold">📍 {r.sourceName}</div>
         {r.sourceLocation && <div className="text-[14px] text-ink-3">{r.sourceLocation}</div>}
-        <div className="label mt-4">Возьми</div>
+        <div className="label mt-4">Рекомендуем взять</div>
         <div className="mt-2 space-y-2">
           {pickList(r).map((p) => (
             <DishRow key={p.productId} name={p.name} sku={p.sku} emoji={p.emoji} color={p.color} categoryName={p.categoryName} qty={p.planned} />
           ))}
         </div>
-        <div className="mt-2 text-right text-[14px] text-ink-3">
-          Итого: {r.totalItems} {plural(r.totalItems, "позиция", "позиции", "позиций")}
-        </div>
+        <div className="mt-2 text-[13px] text-ink-3">Можно взять меньше — выберете количество на следующем шаге.</div>
       </section>
 
       <section className="mt-4 space-y-3">
@@ -204,7 +226,7 @@ export default function TaskPage({ params }: { params: Promise<{ id: string }> }
               }}
               className="h-12 w-full text-[15px] text-ink-3"
             >
-              Пропустить
+              Пропустить задачу
             </button>
           )}
         </div>
@@ -222,7 +244,33 @@ export default function TaskPage({ params }: { params: Promise<{ id: string }> }
   );
 }
 
-// ───────────────────────── fullscreen checklist ─────────────────────────
+// ───────────────────────── execution (pick → summary → drop) ─────────────────────────
+
+function Stepper({ value, max, onChange }: { value: number; max: number; onChange: (v: number) => void }) {
+  return (
+    <div className="flex items-center gap-2">
+      <button
+        type="button"
+        onClick={() => onChange(Math.max(0, value - 1))}
+        disabled={value <= 0}
+        className="h-12 w-12 rounded-xl bg-surface-3 text-[26px] leading-none disabled:opacity-30"
+        aria-label="Меньше"
+      >
+        −
+      </button>
+      <span className="num w-10 text-center text-[26px] font-bold">{value}</span>
+      <button
+        type="button"
+        onClick={() => onChange(Math.min(max, value + 1))}
+        disabled={value >= max}
+        className="h-12 w-12 rounded-xl bg-surface-3 text-[26px] leading-none disabled:opacity-30"
+        aria-label="Больше"
+      >
+        +
+      </button>
+    </div>
+  );
+}
 
 function Execution({
   r,
@@ -241,105 +289,223 @@ function Execution({
   busy: boolean;
   err: string | null;
 }) {
-  const [editing, setEditing] = useState<string | null>(null);
+  const [confirmEmpty, setConfirmEmpty] = useState(false);
   const picks = useMemo(() => pickList(r), [r]);
-  const dist = useMemo(() => distribute(r, p.actual), [r, p.actual]);
-  const totalSteps = 1 + r.stops.length;
-  const step = p.phase === "pick" ? 1 : p.stopIndex + 2;
+  const dist = useMemo(() => distribute(r, p.selected), [r, p.selected]);
+  const plannedTotal = picks.reduce((a, x) => a + x.planned, 0);
+  const selectedTotal = picks.reduce((a, x) => a + (p.selected[x.productId] ?? 0), 0);
 
-  const toggle = (key: string) => onChange({ ...p, checked: { ...p.checked, [key]: !p.checked[key] } });
+  // stops that actually get something (unchosen dishes are not shown at drop-off)
+  const stopItems = (si: number) =>
+    r.stops[si].items.map((i) => ({ i, qty: dist.get(`${si}:${i.lineIndex}:${i.productId}`) ?? 0 })).filter((x) => x.qty > 0);
+  const activeStops = r.stops.map((_, si) => si).filter((si) => stopItems(si).length > 0);
+  const totalSteps = 2 + activeStops.length;
+  const step = p.phase === "pick" ? 1 : p.phase === "summary" ? 2 : 3 + Math.max(0, activeStops.indexOf(p.stopIndex));
 
-  let title: string;
-  let place: string;
+  const setQty = (productId: string, q: number) => {
+    const skipped = { ...p.skipped };
+    if (q > 0) delete skipped[productId];
+    onChange({ ...p, selected: { ...p.selected, [productId]: q }, skipped });
+  };
+  const skip = (productId: string, reason = "skipped") =>
+    onChange({ ...p, selected: { ...p.selected, [productId]: 0 }, skipped: { ...p.skipped, [productId]: reason } });
+
+  let header: { title: string; place: string };
   let body: React.ReactNode;
-  let allChecked: boolean;
-  let cta: string;
-  let next: () => void;
+  let bar: React.ReactNode;
 
   if (p.phase === "pick") {
-    title = "ЗАБЕРИ ИЗ";
-    place = r.sourceName;
-    allChecked = picks.every((x) => p.checked[`p:${x.productId}`]);
-    cta = "ВСЁ ЗАБРАЛ";
-    next = () => onChange({ ...p, phase: "drop", stopIndex: 0 });
-    body = picks.map((x) => {
-      const key = `p:${x.productId}`;
-      const actual = p.actual[x.productId] ?? x.planned;
-      return (
-        <div key={key}>
-          <DishRow
-            name={x.name}
-            sku={x.sku}
-            emoji={x.emoji}
-            color={x.color}
-            categoryName={x.categoryName}
-            qty={actual}
-            checked={!!p.checked[key]}
-            onToggle={() => toggle(key)}
-            strike={actual === 0}
-          />
-          {actual < x.planned && <div className="mt-1 px-2 text-[13px] text-warn">Было нужно {x.planned}, взял {actual} — это нормально, система учтёт</div>}
-          {editing === key ? (
-            <div className="mt-2 flex items-center gap-2 rounded-2xl border border-line bg-surface-2 p-2">
-              <span className="px-2 text-[14px] text-ink-2">Есть только</span>
-              <button
-                className="h-12 w-12 rounded-xl bg-surface-3 text-[22px]"
-                onClick={() => onChange({ ...p, actual: { ...p.actual, [x.productId]: Math.max(0, actual - 1) } })}
-                aria-label="Меньше"
-              >
-                −
-              </button>
-              <span className="num w-10 text-center text-[22px] font-bold">{actual}</span>
-              <button
-                className="h-12 w-12 rounded-xl bg-surface-3 text-[22px]"
-                onClick={() => onChange({ ...p, actual: { ...p.actual, [x.productId]: Math.min(x.planned, actual + 1) } })}
-                aria-label="Больше"
-              >
-                +
-              </button>
-              <button className="ml-auto h-12 rounded-xl bg-ink px-4 text-[15px] font-semibold text-bg" onClick={() => setEditing(null)}>
-                OK
-              </button>
-            </div>
-          ) : (
-            <button onClick={() => setEditing(key)} className="mt-1 h-10 px-2 text-[14px] text-ink-3">
-              Нет столько? Есть только…
+    header = { title: "ЗАБЕРИ ИЗ", place: r.sourceName };
+    body = (
+      <>
+        <button
+          type="button"
+          onClick={() => onChange({ ...p, selected: Object.fromEntries(picks.map((x) => [x.productId, x.planned])), skipped: {} })}
+          className="mb-3 flex h-12 w-full items-center justify-center gap-2 rounded-2xl border border-line-strong bg-surface-2 text-[15px] font-semibold active:bg-surface-3"
+        >
+          ☑ ВЫБРАТЬ ВСЁ
+        </button>
+        <div className="space-y-3">
+          {picks.map((x) => {
+            const q = p.selected[x.productId] ?? 0;
+            const skipped = p.skipped[x.productId];
+            return (
+              <div key={x.productId} className={clsx("rounded-2xl border p-3", skipped ? "border-line bg-surface opacity-60" : q > 0 ? "border-good/50 bg-good/5" : "border-line bg-surface")}>
+                <div className="flex items-start gap-3">
+                  <span className="mt-1 w-1.5 self-stretch rounded-full" style={{ background: x.color }} aria-hidden />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[18px] font-semibold leading-snug">{x.name}</div>
+                    <div className="mt-0.5 flex flex-wrap items-center gap-2 text-[13px] text-ink-3">
+                      <span>
+                        {x.emoji} {x.categoryName}
+                      </span>
+                      <span className="rounded bg-surface-3 px-1.5 py-px font-mono text-[12px] text-ink-2">{x.sku}</span>
+                    </div>
+                    <div className="mt-1 text-[14px] text-ink-2">
+                      Рекомендовано: <span className="num font-bold text-ink">{x.planned}</span>
+                    </div>
+                  </div>
+                </div>
+                {skipped ? (
+                  <div className="mt-3">
+                    <div className="mb-2 text-[13px] text-ink-3">Пропущено. Причина — по желанию:</div>
+                    <div className="flex flex-wrap gap-2">
+                      {SKIP_REASONS.map((s) => (
+                        <button
+                          key={s.id}
+                          type="button"
+                          onClick={() => skip(x.productId, s.id)}
+                          className={clsx("h-10 rounded-xl border px-3 text-[13px]", skipped === s.id ? "border-ink bg-surface-3 text-ink" : "border-line text-ink-3")}
+                        >
+                          {s.label}
+                        </button>
+                      ))}
+                      <button type="button" onClick={() => setQty(x.productId, x.planned)} className="h-10 rounded-xl px-3 text-[13px] text-accent">
+                        Вернуть
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    <Stepper value={q} max={x.planned} onChange={(v) => setQty(x.productId, v)} />
+                    <div className="ml-auto flex gap-1.5">
+                      <button type="button" onClick={() => setQty(x.productId, x.planned)} className="h-12 rounded-xl border border-line-strong px-3 text-[13px] font-semibold">
+                        ВСЁ
+                      </button>
+                      {x.planned >= 2 && (
+                        <button type="button" onClick={() => setQty(x.productId, Math.max(1, Math.floor(x.planned / 2)))} className="h-12 rounded-xl border border-line-strong px-3 text-[13px] font-semibold">
+                          ½
+                        </button>
+                      )}
+                      <button type="button" onClick={() => skip(x.productId)} className="h-12 rounded-xl border border-line px-3 text-[13px] text-ink-3">
+                        ПРОПУСТИТЬ
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </>
+    );
+    bar = confirmEmpty ? (
+      <div className="space-y-2">
+        <div className="text-center text-[15px]">Вы ничего не выбрали.</div>
+        <button
+          disabled={busy}
+          onClick={() => onFinish({ ...p, phase: "done", skipped: Object.fromEntries(picks.map((x) => [x.productId, p.skipped[x.productId] ?? "skipped"])) })}
+          className="h-14 w-full rounded-2xl bg-surface-3 text-[16px] font-semibold"
+        >
+          ПРОПУСТИТЬ ЭТУ ТОЧКУ
+        </button>
+        <button onClick={() => setConfirmEmpty(false)} className="h-11 w-full text-[14px] text-ink-3">
+          Назад к выбору
+        </button>
+      </div>
+    ) : (
+      <div className="space-y-2">
+        <div className="flex items-center justify-between text-[15px]">
+          <span>
+            Выбрано: <span className="num font-bold">{selectedTotal}</span> <span className="text-ink-3">из {plannedTotal}</span>
+          </span>
+          {selectedTotal > 0 && selectedTotal < plannedTotal && (
+            <button
+              type="button"
+              onClick={() =>
+                onChange({
+                  ...p,
+                  phase: "summary",
+                  skipped: { ...Object.fromEntries(picks.filter((x) => !(p.selected[x.productId] > 0)).map((x) => [x.productId, p.skipped[x.productId] ?? "skipped"])), ...p.skipped },
+                })
+              }
+              className="h-10 rounded-xl px-2 text-[13px] text-ink-3"
+            >
+              Пропустить невыбранное
             </button>
           )}
         </div>
-      );
-    });
+        <button
+          onClick={() => (selectedTotal === 0 ? setConfirmEmpty(true) : onChange({ ...p, phase: "summary" }))}
+          className={clsx("h-16 w-full rounded-2xl text-[18px] font-bold active:scale-[0.99]", selectedTotal > 0 ? "bg-good text-white" : "bg-surface-3 text-ink")}
+        >
+          ДАЛЬШЕ
+        </button>
+      </div>
+    );
+  } else if (p.phase === "summary") {
+    header = { title: "ВЫ БЕРЁТЕ ИЗ", place: r.sourceName };
+    body = (
+      <div className="card p-4">
+        <ul className="space-y-2">
+          {picks
+            .filter((x) => (p.selected[x.productId] ?? 0) > 0)
+            .map((x) => (
+              <li key={x.productId} className="flex items-baseline gap-2 text-[17px]">
+                <span>{x.emoji}</span>
+                <span className="flex-1">{x.name}</span>
+                <span className="num font-bold">×{p.selected[x.productId]}</span>
+              </li>
+            ))}
+        </ul>
+        <div className="mt-3 border-t border-line pt-3 text-[16px]">
+          Итого: <span className="num font-bold">{selectedTotal}</span> {plural(selectedTotal, "блюдо", "блюда", "блюд")}
+          {selectedTotal < plannedTotal && <span className="text-ink-3"> · выбрано {selectedTotal} из {plannedTotal} рекомендованных</span>}
+        </div>
+      </div>
+    );
+    bar = (
+      <div className="grid grid-cols-[1fr_2fr] gap-2">
+        <button onClick={() => onChange({ ...p, phase: "pick" })} className="h-16 rounded-2xl border border-line-strong text-[16px] font-semibold">
+          ИЗМЕНИТЬ
+        </button>
+        <button
+          onClick={() => onChange({ ...p, phase: "drop", stopIndex: activeStops[0] ?? 0 })}
+          className="h-16 rounded-2xl bg-good text-[18px] font-bold text-white active:scale-[0.99]"
+        >
+          ПРОДОЛЖИТЬ
+        </button>
+      </div>
+    );
   } else {
-    const s = r.stops[p.stopIndex];
-    title = "НЕСИ В";
-    place = s.name;
-    const items = s.items
-      .map((i) => ({ i, qty: dist.get(`${p.stopIndex}:${i.lineIndex}:${i.productId}`) ?? i.qty }))
-      .filter((x) => x.qty > 0);
-    allChecked = items.every(({ i }) => p.checked[`${p.stopIndex}:${i.lineIndex}:${i.productId}`]);
-    const last = p.stopIndex === r.stops.length - 1;
-    cta = last ? "ГОТОВО" : `ГОТОВО → ${r.stops[p.stopIndex + 1].name}`;
-    next = () => (last ? onFinish({ ...p, phase: "done" }) : onChange({ ...p, stopIndex: p.stopIndex + 1 }));
-    body = items.length ? (
-      items.map(({ i, qty }: { i: Item; qty: number }) => {
-        const key = `${p.stopIndex}:${i.lineIndex}:${i.productId}`;
-        return (
-          <DishRow
-            key={key}
-            name={i.name}
-            sku={i.sku}
-            emoji={i.emoji}
-            color={i.color}
-            categoryName={i.categoryName}
-            qty={qty}
-            checked={!!p.checked[key]}
-            onToggle={() => toggle(key)}
-            hint={i.hint}
-          />
-        );
-      })
-    ) : (
-      <div className="card p-4 text-[15px] text-ink-2">Для этой точки блюд не осталось — нажмите «Готово».</div>
+    const si = p.stopIndex;
+    const items = stopItems(si);
+    const pos = activeStops.indexOf(si);
+    const nextStop = activeStops[pos + 1];
+    header = { title: "ПОЛОЖИ В", place: r.stops[si]?.name ?? "" };
+    const deliveredHere = items.reduce((a, { i, qty }) => a + Math.min(qty, p.delivered[`${si}:${i.lineIndex}:${i.productId}`] ?? qty), 0);
+    body = (
+      <div className="space-y-3">
+        {items.map(({ i, qty }) => {
+          const key = `${si}:${i.lineIndex}:${i.productId}`;
+          const d = Math.min(qty, p.delivered[key] ?? qty);
+          return (
+            <div key={key} className="rounded-2xl border border-line bg-surface p-3">
+              <DishRow name={i.name} sku={i.sku} emoji={i.emoji} color={i.color} categoryName={i.categoryName} qty={qty} hint={i.hint} />
+              {qty > 1 && (
+                <div className="mt-2 flex items-center justify-between px-1">
+                  <span className="text-[13px] text-ink-3">Положил:</span>
+                  <Stepper value={d} max={qty} onChange={(v) => onChange({ ...p, delivered: { ...p.delivered, [key]: v } })} />
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    );
+    bar = (
+      <div className="space-y-2">
+        <div className="text-[15px]">
+          Положить: <span className="num font-bold">{deliveredHere}</span> {plural(deliveredHere, "блюдо", "блюда", "блюд")}
+        </div>
+        <button
+          disabled={busy}
+          onClick={() => (nextStop === undefined ? onFinish({ ...p, phase: "done" }) : onChange({ ...p, stopIndex: nextStop }))}
+          className="h-16 w-full rounded-2xl bg-good text-[18px] font-bold text-white active:scale-[0.99] disabled:opacity-50"
+        >
+          {busy ? "Отправляю…" : nextStop === undefined ? "ГОТОВО" : `ГОТОВО → ${r.stops[nextStop].name}`}
+        </button>
+      </div>
     );
   }
 
@@ -351,7 +517,7 @@ function Execution({
         </button>
         <div className="flex flex-1 justify-center gap-1.5">
           {Array.from({ length: totalSteps }, (_, i) => (
-            <span key={i} className={clsx("h-1.5 w-8 rounded-full", i < step ? "bg-ink" : "bg-surface-3")} />
+            <span key={i} className={clsx("h-1.5 w-7 rounded-full", i < step ? "bg-ink" : "bg-surface-3")} />
           ))}
         </div>
         <span className="num w-14 text-right text-[14px] text-ink-3">
@@ -359,19 +525,14 @@ function Execution({
         </span>
       </div>
       <div className="flex-1 overflow-y-auto px-4 pb-4 pt-5">
-        <div className="text-[14px] font-bold tracking-[0.16em] text-ink-3">{title}</div>
-        <div className="mt-1 text-[34px] font-extrabold leading-tight">{place}</div>
-        <div className="mt-5 space-y-3">{body}</div>
+        <div className="text-[14px] font-bold tracking-[0.16em] text-ink-3">{header.title}</div>
+        <div className="mb-4 mt-1 text-[32px] font-extrabold leading-tight">{header.place}</div>
+        {body}
       </div>
+      {/* sticky action bar — always visible, one-handed */}
       <div className="border-t border-line bg-bg px-4 pb-[calc(12px+env(safe-area-inset-bottom))] pt-3">
         {err && <p className="mb-2 text-[14px] text-crit-ink">{err}</p>}
-        <button
-          disabled={!allChecked || busy}
-          onClick={next}
-          className={clsx("h-16 w-full rounded-2xl text-[18px] font-bold transition", allChecked ? "bg-good text-white active:scale-[0.99]" : "bg-surface-3 text-ink-3")}
-        >
-          {busy ? "Отправляю…" : allChecked ? cta : "Отметьте все позиции"}
-        </button>
+        {bar}
       </div>
     </div>
   );
@@ -379,18 +540,22 @@ function Execution({
 
 // ───────────────────────── success ─────────────────────────
 
-function Success({ r, result }: { r: MobileRoute; result: { xp: XpGain[]; impact?: CompletionImpact; queued?: boolean } }) {
+function Success({ r, result }: { r: MobileRoute; result: { xp: XpGain[]; impact?: CompletionImpact; queued?: boolean; skipped?: boolean } }) {
   const total = result.xp.reduce((a, g) => a + g.amount, 0);
   return (
     <div className="flex min-h-[100dvh] flex-col bg-bg px-5 pb-[calc(20px+env(safe-area-inset-bottom))] pt-[calc(40px+env(safe-area-inset-top))]">
-      <div className="rise mx-auto grid h-20 w-20 place-items-center rounded-full bg-good/20 text-[40px] text-good-ink">✓</div>
-      <h1 className="mt-5 text-center text-[24px] font-extrabold tracking-wide">ЗАДАЧА ВЫПОЛНЕНА</h1>
+      <div className={clsx("rise mx-auto grid h-20 w-20 place-items-center rounded-full text-[40px]", result.skipped ? "bg-surface-3 text-ink-2" : "bg-good/20 text-good-ink")}>
+        {result.skipped ? "–" : "✓"}
+      </div>
+      <h1 className="mt-5 text-center text-[24px] font-extrabold tracking-wide">{result.skipped ? "ТОЧКА ПРОПУЩЕНА" : "ЗАДАЧА ВЫПОЛНЕНА"}</h1>
       <div className="mt-1 text-center text-[15px] text-ink-3">
         {r.sourceName} → {r.stops.map((s) => s.name).join(" → ")}
       </div>
 
       {result.queued ? (
         <div className="card mt-6 p-4 text-center text-[15px] text-warn">Нет связи. Результат сохранён на телефоне и отправится автоматически.</div>
+      ) : result.skipped ? (
+        <p className="mt-6 text-center text-[15px] text-ink-2">Спасибо — это тоже полезная информация: система учтёт её в следующих рекомендациях.</p>
       ) : (
         <>
           <div className="num mt-6 text-center text-[44px] font-extrabold text-xp">+{total} XP</div>

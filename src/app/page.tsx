@@ -7,6 +7,7 @@ import { FridgeCard } from "@/components/FridgeCard";
 import { DevPanel } from "@/components/DevPanel";
 import { useXpToasts } from "@/components/XpToast";
 import { atLeast, useDashboard, useMe, type DashboardView } from "@/lib/client/api";
+import { ModeToggle } from "@/lib/client/forecastMode";
 import { fmtClock, fmtMoney, pct, signed } from "@/lib/client/format";
 
 export default function CommandCenter() {
@@ -38,8 +39,9 @@ export default function CommandCenter() {
 
       <div className="mt-5 grid gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
         <section>
-          <div className="mb-3 flex items-baseline gap-3">
+          <div className="mb-3 flex flex-wrap items-center gap-3">
             <h2 className="label">Mission queue</h2>
+            <ModeToggle size="sm" className="w-[220px]" />
             <span className="text-[11px] text-ink-3">
               {data.lastAnalysisAt ? `анализ в ${fmtClock(data.lastAnalysisAt)} · следующий через час` : ""}
             </span>

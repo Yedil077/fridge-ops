@@ -1,7 +1,8 @@
 import "server-only";
 import { ENGINE_CONFIG } from "../config/engine";
 import { CATEGORIES, CATEGORY_COLORS } from "../domain/categories";
-import type { CategoryId, Mission, NetworkSnapshot } from "../domain/types";
+import type { CategoryId, ForecastMode, Mission, NetworkSnapshot } from "../domain/types";
+import { inMode } from "./views";
 import type { AnalysisResult } from "../engine/analysis";
 import { dailyScore, levelInfo } from "../engine/scoring";
 import type { AppState } from "../store/appStore";
@@ -134,9 +135,9 @@ export function mobileRoute(m: Mission, snap: NetworkSnapshot): MobileRoute {
 
 const URGENCY_ORDER = { NOW: 0, TODAY: 1, LATER: 2 } as const;
 
-function openRoutes(state: AppState, snap: NetworkSnapshot, user: string): MobileRoute[] {
+function openRoutes(state: AppState, snap: NetworkSnapshot, user: string, mode: ForecastMode): MobileRoute[] {
   return state.missions
-    .filter((m) => m.status === "NEW" || m.status === "ACCEPTED" || m.status === "IN_PROGRESS")
+    .filter((m) => inMode(m, mode))
     .sort((a, b) => {
       const mineA = a.acceptedBy === user && a.status !== "NEW" ? 0 : 1;
       const mineB = b.acceptedBy === user && b.status !== "NEW" ? 0 : 1;
@@ -164,7 +165,7 @@ function todayStats(state: AppState, snap: NetworkSnapshot, user: string) {
   };
 }
 
-export function mobileHome(snap: NetworkSnapshot, a: AnalysisResult, state: AppState, user: string, mode: string) {
+export function mobileHome(snap: NetworkSnapshot, a: AnalysisResult, state: AppState, user: string, mode: string, forecastMode: ForecastMode = "realtime") {
   const counts = { normal: 0, attention: 0, critical: 0, closed: 0 };
   for (const f of a.forecasts) counts[f.status]++;
   const p = state.players[user];
@@ -172,20 +173,21 @@ export function mobileHome(snap: NetworkSnapshot, a: AnalysisResult, state: AppS
     now: snap.now,
     mode,
     counts,
-    routes: openRoutes(state, snap, user),
+    forecastMode,
+    routes: openRoutes(state, snap, user, forecastMode),
     today: todayStats(state, snap, user),
     player: { name: user, ...levelInfo(p?.xp ?? 0), points: p?.points ?? 0, streak: p?.streak ?? 0 },
     lastAnalysisAt: state.lastAnalysisAt,
   };
 }
 
-export function mobileTasks(snap: NetworkSnapshot, state: AppState, user: string) {
+export function mobileTasks(snap: NetworkSnapshot, state: AppState, user: string, forecastMode: ForecastMode = "realtime") {
   const day = snap.today.day;
   const done = state.missions
     .filter((m) => (m.status === "COMPLETED" || m.status === "SKIPPED") && dayNumber(m.createdAt) === day)
     .sort((x, y) => (y.completedAt ?? y.skippedAt ?? 0) - (x.completedAt ?? x.skippedAt ?? 0))
     .map((m) => mobileRoute(m, snap));
-  return { now: snap.now, open: openRoutes(state, snap, user), done };
+  return { now: snap.now, forecastMode, open: openRoutes(state, snap, user, forecastMode), done };
 }
 
 const STATUS_NOTE: Record<string, string> = {
