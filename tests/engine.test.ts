@@ -11,7 +11,13 @@ test("simulator builds 15 fridges with 180 days of history", () => {
   const snap = sim.snapshot();
   assert.equal(snap.fridges.length, 15);
   assert.equal(snap.history.days, 180);
-  assert.ok(snap.fridges.every((f) => f.name.startsWith("Сатти")));
+  assert.equal(snap.fridges[0].name, "1 Шарипова 4 этаж");
+  assert.equal(snap.fridges[0].externalId, "621287", "KitShop machine id is kept as externalId");
+  assert.ok(snap.fridges.every((f) => /^\d{6}$/.test(f.externalId)));
+  // same building → routed as near
+  const d = snap.fridges.findIndex((f) => f.name.startsWith("2 Досмухамедова"));
+  const d2 = snap.fridges.findIndex((f) => f.name.startsWith("3 Досмухамедова"));
+  assert.ok(snap.travelMinutes[d][d2] <= 5);
 });
 
 test("recommendations are product-level routes that respect stock", () => {

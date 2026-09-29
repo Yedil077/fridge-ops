@@ -15,6 +15,11 @@ export interface Peak {
 
 export interface Archetype {
   code: string;
+  /** real display name (as in KitShop) */
+  name?: string;
+  shortName?: string;
+  /** KitShop machine id — becomes Fridge.externalId */
+  kitshopId?: string;
   location: string;
   locationType: LocationType;
   workingDays: Weekday[];
@@ -52,7 +57,7 @@ export const NETWORK_MIX: Record<CategoryId, number> = {
   drink: 0.18,
 };
 
-export const NETWORK_CENTER = { lat: 55.7512, lng: 37.6184 };
+export const NETWORK_CENTER = { lat: 43.2389, lng: 76.9455 }; // Almaty
 
 export const ARCHETYPES: Archetype[] = [
   {
@@ -146,6 +151,41 @@ export const ARCHETYPES: Archetype[] = [
     weekday: {}, trend: {}, pos: [3.1, -1.7], ageDays: 35, story: "новая точка — cold start",
   },
 ];
+
+/**
+ * Real Green City fridges (KitShop POS list). Names, KitShop ids and buildings are real;
+ * demand shapes above stay simulated. baseDaily ≈ today's KitShop sales count per machine.
+ * Fridges in the same building share a proximity zone → routes go floor-to-floor first.
+ * Positions between buildings are approximate — set real travel times in Настройки.
+ */
+const REAL_FRIDGES: Pick<Archetype, "name" | "shortName" | "kitshopId" | "location" | "zone" | "pos" | "baseDaily">[] = [
+  { kitshopId: "621287", name: "1 Шарипова 4 этаж", shortName: "Шарипова 4", location: "Шарипова · 4 этаж", zone: "Шарипова", pos: [-2.2, -0.6], baseDaily: 24 },
+  { kitshopId: "621288", name: "2 Досмухамедова Запад 3 этаж", shortName: "Досм. Запад 3", location: "Досмухамедова · запад · 3 этаж", zone: "Досмухамедова", pos: [0.6, 0.4], baseDaily: 50 },
+  { kitshopId: "621136", name: "3 Досмухамедова Восток 3 этаж", shortName: "Досм. Восток 3", location: "Досмухамедова · восток · 3 этаж", zone: "Досмухамедова", pos: [0.65, 0.4], baseDaily: 92 },
+  { kitshopId: "622552", name: "4 Досмухамедова 5 этаж", shortName: "Досм. 5", location: "Досмухамедова · 5 этаж", zone: "Досмухамедова", pos: [0.62, 0.42], baseDaily: 68 },
+  { kitshopId: "621583", name: "5 БЦ Сатти 1 этаж", shortName: "Сатти 1", location: "БЦ Сатти · 1 этаж", zone: "БЦ Сатти", pos: [1.8, -1.2], baseDaily: 97 },
+  { kitshopId: "621826", name: "6 БЦ Сатти А2 этаж", shortName: "Сатти А2", location: "БЦ Сатти · А2 этаж", zone: "БЦ Сатти", pos: [1.82, -1.2], baseDaily: 91 },
+  { kitshopId: "621586", name: "7 БЦ Сатти 4 этаж", shortName: "Сатти 4", location: "БЦ Сатти · 4 этаж", zone: "БЦ Сатти", pos: [1.8, -1.22], baseDaily: 98 },
+  { kitshopId: "622550", name: "8 Конкорд 1 этаж", shortName: "Конкорд 1", location: "Конкорд · 1 этаж", zone: "Конкорд", pos: [-0.8, 1.9], baseDaily: 55 },
+  { kitshopId: "621137", name: "9 Конкорд 2 этаж", shortName: "Конкорд 2", location: "Конкорд · 2 этаж", zone: "Конкорд", pos: [-0.78, 1.9], baseDaily: 78 },
+  { kitshopId: "622554", name: "91 Конкорд 5 этаж", shortName: "Конкорд 5", location: "Конкорд · 5 этаж", zone: "Конкорд", pos: [-0.8, 1.92], baseDaily: 99 },
+  { kitshopId: "621135", name: "92 Каблан 3 этаж", shortName: "Каблан 3", location: "Каблан · 3 этаж", zone: "Каблан", pos: [2.6, 1.5], baseDaily: 110 },
+  { kitshopId: "621286", name: "93 Каблан 5 этаж", shortName: "Каблан 5", location: "Каблан · 5 этаж", zone: "Каблан", pos: [2.62, 1.5], baseDaily: 86 },
+  { kitshopId: "622555", name: "94 Каблан 6 этаж", shortName: "Каблан 6", location: "Каблан · 6 этаж", zone: "Каблан", pos: [2.6, 1.52], baseDaily: 65 },
+  { kitshopId: "622551", name: "95 Жибек Жолы 2 этаж", shortName: "Жибек Жолы 2", location: "Жибек Жолы · 2 этаж", zone: "Жибек Жолы", pos: [-0.2, 3.4], baseDaily: 33 },
+  { kitshopId: "622553", name: "Назарбаева 28/3", shortName: "Назарбаева 28/3", location: "пр. Назарбаева 28/3", zone: "Назарбаева", pos: [1.2, 2.8], baseDaily: 41 },
+];
+
+// All real points are office buildings: weekdays, 08:00–20:00 (editable per fridge in Настройки).
+ARCHETYPES.forEach((a, i) => {
+  Object.assign(a, REAL_FRIDGES[i], {
+    locationType: i === 7 || i === 8 ? "coworking" : "office",
+    workingDays: WEEKDAYS,
+    open: h(8),
+    close: h(20),
+    weekday: Object.fromEntries(Object.entries(a.weekday).filter(([d]) => Number(d) <= 5)),
+  });
+});
 
 export interface ProductDef {
   name: string;

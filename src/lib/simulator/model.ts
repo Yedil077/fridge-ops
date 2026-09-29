@@ -80,10 +80,10 @@ export function buildModel(seed: number, anchorDay: number): SimModel {
   const cosLat = Math.cos((NETWORK_CENTER.lat * Math.PI) / 180);
   const fridges: Fridge[] = ARCHETYPES.map((a) => ({
     id: `F${a.code}`,
-    externalId: `mock-shop-${a.code}`,
+    externalId: a.kitshopId ?? `mock-shop-${a.code}`,
     code: a.code,
-    name: `Сатти ${Number(a.code)}`,
-    shortName: `Сатти ${Number(a.code)}`,
+    name: a.name ?? `Fridge ${a.code}`,
+    shortName: a.shortName ?? a.name ?? `Fridge ${a.code}`,
     priority: 2,
     proximityGroup: a.zone,
     location: a.location,
