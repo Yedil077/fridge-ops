@@ -1,0 +1,256 @@
+// Target data model (PostgreSQL) — Phase 2.
+// The MVP runs without a database (JSON store in .data/); these models mirror the same shapes
+// so the AppStore can be swapped to Prisma without touching the engine or the UI.
+//
+// Everything here is OUR data. KitShop is read-only: Sale / InventorySnapshot rows are
+// copies pulled by the sync engine, never written back.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum LocationType {
+  office
+  coworking
+  university
+  gym
+  hospital
+  residential
+}
+
+enum MissionStatus {
+  NEW
+  ACCEPTED
+  IN_PROGRESS
+  COMPLETED
+  SKIPPED
+  EXPIRED
+}
+
+enum MissionType {
+  URGENT
+  RESCUE
+  REBALANCE
+}
+
+model Fridge {
+  id               String        @id @default(cuid())
+  externalId       String        @unique // KitShop shop id
+  code             String        @unique
+  name             String
+  location         String
+  locationType     LocationType  @default(office)
+  latitude         Float?
+  longitude        Float?
+  capacity         Int           @default(100)
+  isActive         Boolean       @default(true)
+  closedOnHolidays Boolean       @default(true)
+  activeSince      DateTime      @default(now())
+  schedule         WorkingSchedule?
+  sales            Sale[]
+  snapshots        InventorySnapshot[]
+  profile          FridgeProfile?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+}
+
+model WorkingSchedule {
+  id            String   @id @default(cuid())
+  fridge        Fridge   @relation(fields: [fridgeId], references: [id], onDelete: Cascade)
+  fridgeId      String   @unique
+  workingDays   Int[] // ISO weekdays 1..7
+  openingMinute Int
+  closingMinute Int
+  /** explicit closed dates (holidays, maintenance) */
+  closedDates   DateTime[] @db.Date
+}
+
+model Category {
+  id            String    @id // breakfast | hot | salad | snack | dessert | drink
+  name          String
+  emoji         String
+  shelfLifeDays Int
+  wasteShareOpen   Float // leftover share written off if the fridge works tomorrow
+  wasteShareClosed Float // … if it is closed tomorrow
+  core          Boolean   @default(true)
+  products      Product[]
+}
+
+model Product {
+  id         String   @id @default(cuid())
+  externalId String   @unique // KitShop product id
+  name       String
+  category   Category @relation(fields: [categoryId], references: [id])
+  categoryId String
+  price      Decimal  @db.Decimal(10, 2)
+  isActive   Boolean  @default(true)
+  sales      Sale[]
+  snapshots  InventorySnapshot[]
+}
+
+/// Copy of KitShop sales (read-only source). Upserted by externalSaleId → idempotent incremental sync.
+model Sale {
+  id             String   @id @default(cuid())
+  externalSaleId String   @unique
+  fridge         Fridge   @relation(fields: [fridgeId], references: [id])
+  fridgeId       String
+  product        Product  @relation(fields: [productId], references: [id])
+  productId      String
+  quantity       Int // negative = return
+  price          Decimal  @db.Decimal(10, 2)
+  soldAt         DateTime // wall-clock of the fridge
+  syncedAt       DateTime @default(now())
+
+  @@index([fridgeId, soldAt])
+  @@index([productId, soldAt])
+}
+
+model InventorySnapshot {
+  id        String   @id @default(cuid())
+  fridge    Fridge   @relation(fields: [fridgeId], references: [id])
+  fridgeId  String
+  product   Product  @relation(fields: [productId], references: [id])
+  productId String
+  quantity  Int
+  takenAt   DateTime
+
+  @@index([fridgeId, takenAt])
+}
+
+/// Pre-aggregated cube fridge × category × day × hour (what the engine reads).
+model HourlyAggregate {
+  fridgeId   String
+  categoryId String
+  day        DateTime @db.Date
+  hour       Int
+  quantity   Float
+  stockout   Boolean  @default(false)
+
+  @@id([fridgeId, categoryId, day, hour])
+}
+
+model Forecast {
+  id              String   @id @default(cuid())
+  fridgeId        String
+  categoryId      String
+  createdAt       DateTime @default(now())
+  horizonMinutes  Int
+  expected        Float
+  low             Int
+  high            Int
+  confidence      Float
+  actual          Float? // filled later → prediction accuracy
+  @@index([fridgeId, categoryId, createdAt])
+}
+
+model FridgeProfile {
+  fridgeId    String   @id
+  fridge      Fridge   @relation(fields: [fridgeId], references: [id], onDelete: Cascade)
+  title       String
+  demandIndex Json // { categoryId: index }
+  peakFrom    Int?
+  peakTo      Int?
+  traits      Json
+  computedAt  DateTime @default(now())
+}
+
+model TransferMission {
+  id             String        @id @default(cuid())
+  number         Int           @unique @default(autoincrement())
+  type           MissionType
+  title          String
+  status         MissionStatus @default(NEW)
+  priorityScore  Int
+  sourceFridgeId String
+  targetFridgeId String
+  travelMinutes  Int
+  headline       String
+  reason         Json // full explanation per line
+  effect         Json
+  createdAt      DateTime      @default(now())
+  acceptedAt     DateTime?
+  acceptedBy     String?
+  startedAt      DateTime?
+  completedAt    DateTime?
+  completedBy    String?
+  skippedAt      DateTime?
+  skipReason     String?
+  xpAwarded      Int           @default(0)
+  lines          Transfer[]
+  evaluation     MissionEvaluation?
+
+  @@index([status, createdAt])
+}
+
+/// One category line of a mission: recommended vs actually moved.
+model Transfer {
+  id                     String          @id @default(cuid())
+  mission                TransferMission @relation(fields: [missionId], references: [id], onDelete: Cascade)
+  missionId              String
+  categoryId             String
+  recommendedQuantity    Int
+  actualQuantity         Int?
+  expectedShortage       Int
+  expectedSurplus        Int
+  targetStockBefore      Int
+  predictedTargetSales2h Float
+  products               Json
+}
+
+model MissionEvaluation {
+  missionId    String          @id
+  mission      TransferMission @relation(fields: [missionId], references: [id], onDelete: Cascade)
+  evaluatedAt  DateTime
+  result       String // EXCELLENT | GOOD | WEAK | POOR
+  successRate  Float
+  accuracy     Float
+  details      Json
+}
+
+model PairStats {
+  sourceFridgeId String
+  targetFridgeId String
+  categoryId     String
+  moved          Int @default(0)
+  sold           Int @default(0)
+  count          Int @default(0)
+
+  @@id([sourceFridgeId, targetFridgeId, categoryId])
+}
+
+model ForecastBias {
+  fridgeId   String
+  categoryId String
+  bias       Float @default(1)
+
+  @@id([fridgeId, categoryId])
+}
+
+model SyncState {
+  resource   String   @id // sales | stocks | shops | products
+  lastSyncAt DateTime?
+  lastError  String?
+}
+
+model User {
+  id        String    @id @default(cuid())
+  name      String    @unique
+  xp        Int       @default(0)
+  createdAt DateTime  @default(now())
+  xpEvents  XpEvent[]
+}
+
+model XpEvent {
+  id        String   @id @default(cuid())
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String
+  amount    Int
+  reason    String
+  missionId String?
+  at        DateTime @default(now())
+}

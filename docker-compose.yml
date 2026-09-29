@@ -1,0 +1,51 @@
+# Production stack: app + PostgreSQL + Caddy (automatic HTTPS).
+#   cp deploy/.env.production.example .env.production   # fill in secrets on the SERVER only
+#   docker compose --env-file .env.production up -d --build
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: fridgeops
+      POSTGRES_USER: fridgeops
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.production}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fridgeops -d fridgeops"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env.production
+    environment:
+      STORE_DRIVER: postgres
+      DATABASE_URL: postgres://fridgeops:${POSTGRES_PASSWORD}@db:5432/fridgeops
+    depends_on:
+      db:
+        condition: service_healthy
+    expose:
+      - "3000"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env.production}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

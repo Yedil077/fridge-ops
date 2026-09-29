@@ -1,0 +1,14 @@
+node_modules
+.next
+.data
+.git
+.github
+android
+capacitor-www
+*.apk
+*.aab
+.env
+.env.*
+!.env.example
+docs
+tests

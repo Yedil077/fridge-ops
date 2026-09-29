@@ -1,0 +1,46 @@
+{
+  "name": "fridge-ops",
+  "version": "1.1.0",
+  "private": true,
+  "description": "Fridge Ops — внутренний сервис перераспределения остатков между холодильниками самообслуживания",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "smoke": "tsx scripts/smoke.mts",
+    "test": "tsx --test tests/**/*.test.ts",
+    "cap:prepare": "node scripts/cap-prepare.mjs",
+    "cap:sync": "node scripts/cap-prepare.mjs && cap sync android && node scripts/android-assets.mjs",
+    "cap:open": "cap open android",
+    "android:debug": "npm run cap:sync && node scripts/gradle.mjs assembleDebug",
+    "android:release": "npm run cap:sync && node scripts/gradle.mjs bundleRelease",
+    "icons": "node scripts/make-icons.mjs"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.5.2",
+    "@capacitor/app": "^8.1.1",
+    "@capacitor/core": "^8.5.2",
+    "@tanstack/react-query": "^5.104.0",
+    "clsx": "^2.1.1",
+    "next": "^15.5.26",
+    "pg": "^8.23.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "recharts": "^3.10.1",
+    "server-only": "^0.0.1",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.5.2",
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/node": "^26.6.3",
+    "@types/pg": "^8.23.1",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "postcss": "^8.5.28",
+    "tailwindcss": "^4.3.3",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
+  }
+}

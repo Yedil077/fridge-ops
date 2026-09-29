@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  web:
+    name: Typecheck · Test · Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Health check of the production build
+        env:
+          NODE_ENV: production
+          ALLOW_FILE_STORE: "true"
+          AUTH_SECRET: ci-only-secret-not-used-anywhere-else
+        run: |
+          npx next start -p 3100 &
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3100/api/health; then exit 0; fi
+            sleep 2
+          done
+          echo "health check failed" && exit 1
+
+  android:
+    name: Android debug APK
+    needs: web
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Install
+        run: npm ci
+
+      - name: Sync Capacitor (placeholder server URL — no secrets)
+        env:
+          CAP_SERVER_URL: https://fridge-ops.example.com/m
+        run: npm run cap:sync
+
+      - name: Build debug APK
+        run: node scripts/gradle.mjs assembleDebug --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fridge-ops-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          retention-days: 14

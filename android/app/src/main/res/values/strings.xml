@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Fridge Ops</string>
+    <string name="title_activity_main">Fridge Ops</string>
+    <string name="package_name">kz.greencity.fridgeops</string>
+    <string name="custom_url_scheme">kz.greencity.fridgeops</string>
+</resources>

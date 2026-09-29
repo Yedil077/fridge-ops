@@ -1,0 +1,10 @@
+# Normalise line endings in the repository; shell scripts must stay LF (CI and servers are Linux).
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+android/gradlew text eol=lf
+*.sh text eol=lf
+*.png binary
+*.jar binary
+*.jks binary
+*.keystore binary
