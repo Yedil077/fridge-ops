@@ -61,11 +61,11 @@ test("conservative quantities: per-dish and per-route caps, variety kept at the 
 });
 
 test("forecast mode really changes the horizon and the recommendations", () => {
-  // 10:00, fridge 08:00–21:00 → REAL TIME ends 11:30, ДО 20:00 ends 20:00
+  // 10:00, fridge 08:00–21:00 → REAL TIME ends 11:30, second mode ends at the fridge's closing time 21:00
   assert.equal(horizonEnd("realtime", 480, 1260, 600), 690);
-  assert.equal(horizonEnd("until20", 480, 1260, 600), 1200);
-  // after 20:00 ДО 20:00 falls back to the real-time window
-  assert.equal(horizonEnd("until20", 480, 1320, 1230), 1320);
+  assert.equal(horizonEnd("until20", 480, 1260, 600), 1260);
+  // closing time comes from settings: a fridge closing at 19:00 is forecast until 19:00
+  assert.equal(horizonEnd("until20", 480, 1140, 600), 1140);
   const snap = daySnapshots()[0];
   const rt = analyze(snap, learning(), [], "realtime").drafts;
   const u20 = analyze(snap, learning(), [], "until20").drafts;

@@ -3,10 +3,12 @@
 import { useCallback, useSyncExternalStore } from "react";
 import clsx from "clsx";
 import type { ForecastMode } from "@/lib/domain/types";
+import { useMe } from "./api";
 
 /**
- * Forecast horizon chosen by the user — REAL TIME (until the next check) or ДО 20:00.
- * Remembered on this device and sent to the server (?mode=…), where it really changes the engine.
+ * Forecast horizon chosen by the user — REAL TIME (from now until the next check) or
+ * ДО <closing time from Настройки>. Remembered on this device and sent to the server (?mode=…),
+ * where it really changes the engine.
  */
 
 const KEY = "fo-forecast-mode";
@@ -44,6 +46,7 @@ export function useForecastMode(): [ForecastMode, (m: ForecastMode) => void] {
 
 export function ModeToggle({ size = "md", className }: { size?: "sm" | "md"; className?: string }) {
   const [mode, setMode] = useForecastMode();
+  const close = useMe().data?.closeTime;
   const btn = (m: ForecastMode, label: string, hint: string) => (
     <button
       key={m}
@@ -62,8 +65,8 @@ export function ModeToggle({ size = "md", className }: { size?: "sm" | "md"; cla
   );
   return (
     <div className={clsx("flex gap-1 rounded-xl border border-line bg-surface p-1", className)} role="group" aria-label="Горизонт прогноза">
-      {btn("realtime", "REAL TIME", "Что сделать сейчас, до следующей проверки (~90 мин)")}
-      {btn("until20", "ДО 20:00", "Распределить с учётом спроса до 20:00")}
+      {btn("realtime", "REAL TIME", "Что сделать сейчас: от текущего времени до следующей проверки (~90 мин)")}
+      {btn("until20", close ? `ДО ${close}` : "ДО ЗАКРЫТИЯ", "Распределить с учётом спроса до закрытия (время закрытия — в Настройках)")}
     </div>
   );
 }

@@ -72,7 +72,7 @@ crontab -e   # 0 3 * * * /opt/fridge-ops/deploy/backup.sh
 | `AUTH_SECRET` | подпись служебной cookie роли; обязателен |
 | `ADMIN_LOGIN`, `ADMIN_PIN`, `ADMIN_NAME` | первый администратор (создаётся один раз, если пользователей нет) |
 | `DATA_SOURCE` | `mock` (пилот на симуляторе) или `kitshop` |
-| `SIM_REALTIME` | `true` — симулятор идёт по реальным часам (пилот) |
+| `SIM_REALTIME` | по умолчанию часы симулятора идут по реальному времени; `false` — остановить часы (для тестов) |
 | `APP_TIMEZONE` | часовой пояс холодильников, например `Asia/Almaty` |
 | `KITSHOP_*` | только сервер, только чтение; пока `KITSHOP_ENABLED=false` |
 

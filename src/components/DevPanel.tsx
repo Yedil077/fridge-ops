@@ -9,6 +9,8 @@ const ACTIONS: { id: string; label: string; hint: string; tone?: "danger" }[] = 
   { id: "advance15", label: "+15 MIN", hint: "Продвинуть время" },
   { id: "advance60", label: "SIMULATE +1 HOUR", hint: "Час продаж + часовой анализ" },
   { id: "advance180", label: "+3 HOURS", hint: "Три часа" },
+  { id: "to-close", label: "⏭ ДО ЗАКРЫТИЯ", hint: "Прокрутить день до закрытия (время из Настроек)" },
+  { id: "now", label: "⏮ СЕЙЧАС", hint: "Вернуться к реальному текущему времени" },
   { id: "sales", label: "SIMULATE SALES", hint: "Всплеск ~30 мин спроса" },
   { id: "shortage", label: "CREATE SHORTAGE", hint: "Обнулить популярную категорию" },
   { id: "overstock", label: "CREATE OVERSTOCK", hint: "+14 шт. непопулярной категории" },

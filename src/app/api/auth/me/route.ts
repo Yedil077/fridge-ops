@@ -6,5 +6,6 @@ export const dynamic = "force-dynamic";
 export const GET = handle(async () => {
   const u = await requireUser();
   const rt = await getRuntime();
-  return { id: u.id, login: u.login, name: u.name, role: u.role, mode: rt.mode };
+  const snap = await rt.snapshot();
+  return { id: u.id, login: u.login, name: u.name, role: u.role, mode: rt.mode, closeTime: rt.closeTime(snap) };
 });

@@ -8,7 +8,7 @@ import { createStore, emptyState, newPlayer, type AppState, type FridgeSettings,
 import { deliver, detectAlerts } from "./notifications";
 import { bootstrapUsers } from "./users";
 import { Simulator } from "../simulator/simulator";
-import { dayNumber, minuteOfDay, MINUTE_MS, wallClockNow } from "../time";
+import { dayNumber, fmtHM, minuteOfDay, MINUTE_MS, wallClockNow, weekdayOf } from "../time";
 import { KitShopDataSource } from "@/services/kitshop";
 
 /**
@@ -50,7 +50,7 @@ export interface CompletionImpact {
   unlockedAchievements: string[];
 }
 
-const TZ = process.env.APP_TIMEZONE || "Europe/Moscow";
+const TZ = process.env.APP_TIMEZONE || "Asia/Almaty";
 
 class Runtime {
   state: AppState;
@@ -125,11 +125,11 @@ class Runtime {
   }
 
   /**
-   * SIM_REALTIME=true (pilot / demo server): the simulated clock follows the real clock,
-   * so a deployed mock server behaves like a live network without anyone pressing DEV buttons.
+   * The simulated clock follows the REAL clock by default (set SIM_REALTIME=false to freeze it for tests).
+   * DEV "+1 час" can move ahead; the clock then waits until real time catches up, or press "Сейчас".
    */
   private catchUpRealtime() {
-    if (process.env.SIM_REALTIME !== "true" || !this.sim || this.catchingUp) return;
+    if (process.env.SIM_REALTIME === "false" || !this.sim || this.catchingUp) return;
     const target = wallClockNow(TZ);
     const behind = Math.floor((target - this.sim.now) / MINUTE_MS);
     if (behind < 15) return;
@@ -208,6 +208,17 @@ class Runtime {
   async analysis(mode: ForecastMode = "realtime"): Promise<{ snap: NetworkSnapshot; result: AnalysisResult }> {
     const snap = await this.snapshot();
     return { snap, result: this.analysisFor(snap, mode) };
+  }
+
+  /** Most common closing time of fridges working today (from Настройки) — label of the second mode. */
+  closeTime(snap: NetworkSnapshot): string {
+    const counts = new Map<number, number>();
+    for (const f of snap.fridges) {
+      if (!f.isActive || !f.workingDays.includes(weekdayOf(dayNumber(snap.now)))) continue;
+      counts.set(f.closingMinute, (counts.get(f.closingMinute) ?? 0) + 1);
+    }
+    const best = [...counts.entries()].sort((a, b) => b[1] - a[1] || b[0] - a[0])[0]?.[0] ?? 20 * 60;
+    return fmtHM(best);
   }
 
   /** Current display names (Admin can rename fridges at any time). */
@@ -605,6 +616,33 @@ class Runtime {
       case "anomaly":
         text = sim.createAnomaly();
         break;
+      case "to-close": {
+        // jump to the end of the working day: the latest closing time among today's fridges
+        const snap = this.simSnapshot();
+        const today = weekdayOf(dayNumber(snap.now));
+        const close = Math.max(0, ...snap.fridges.filter((f) => f.workingDays.includes(today)).map((f) => f.closingMinute));
+        const left = close - minuteOfDay(snap.now);
+        if (left <= 0) return `Уже после закрытия (${fmtHM(close)})`;
+        this.advance(Math.ceil(left / 15) * 15);
+        return `Прокручено до закрытия · ${fmtHM(close)}`;
+      }
+      case "now": {
+        // back to the real current time (after "+1 час" / "до закрытия")
+        const target = wallClockNow(TZ);
+        const start = minuteOfDay(target) - (minuteOfDay(target) % 15);
+        if (dayNumber(target) !== sim.state.day || sim.now > target) {
+          for (const m of this.state.missions) if (m.status === "NEW" || m.status === "ACCEPTED" || m.status === "IN_PROGRESS") m.status = "EXPIRED";
+          if (dayNumber(target) === sim.state.day) sim.resetDay(start);
+          else {
+            this.sim = Simulator.create(sim.state.seed, dayNumber(target), start);
+            this.state.sim = this.sim.state;
+          }
+          this.cache.clear();
+        }
+        this.runHourlySync();
+        this.save();
+        return `Реальное время · ${fmtHM(minuteOfDay(target))}`;
+      }
       case "reset-day":
         for (const m of this.state.missions) if (dayNumber(m.createdAt) === sim.state.day) m.status = "EXPIRED";
         text = sim.resetDay();

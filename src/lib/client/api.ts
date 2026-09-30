@@ -39,6 +39,8 @@ export interface Me {
   name: string;
   role: "EMPLOYEE" | "MANAGER" | "ADMIN";
   mode: string;
+  /** closing time from Настройки, e.g. "20:00" — label of the second forecast mode */
+  closeTime?: string;
 }
 
 export function useMe() {

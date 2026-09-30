@@ -222,8 +222,8 @@ export type MissionType = "URGENT" | "RESCUE" | "REBALANCE";
 export type MissionUrgency = "NOW" | "TODAY" | "LATER";
 /**
  * Forecast horizon chosen by the user:
- *  • realtime — until the next check (~90 min): don't let a shelf go empty before the next round
- *  • until20  — distribute stock against demand until 20:00 today
+ *  • realtime — from the current time until the next check (~90 min)
+ *  • until20  — until each fridge's closing time from Настройки (id kept for compatibility; shown as "ДО HH:MM")
  */
 export type ForecastMode = "realtime" | "until20";
 

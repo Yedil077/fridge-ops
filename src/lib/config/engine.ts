@@ -63,8 +63,7 @@ export const ENGINE_CONFIG = {
   transfer: {
     /** REAL TIME mode: look this far ahead (≈ until the next check). */
     realtimeHorizonMinutes: 90,
-    /** "ДО 20:00" mode: forecast until this minute of the day (capped by closing time). */
-    until20Minute: 20 * 60,
+    /* "ДО ЗАКРЫТИЯ" mode forecasts until each fridge's closing time from Настройки. */
     /** Target may absorb up to this share of its expected sales until close. */
     absorbRatio: 0.8,
     /** Target must stay open at least this long after the transfer. */

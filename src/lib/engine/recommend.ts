@@ -52,8 +52,8 @@ export function horizonEnd(mode: ForecastMode, openingMinute: number, closingMin
   const from = Math.max(nowMinute, openingMinute);
   const realtime = Math.min(closingMinute, from + T.realtimeHorizonMinutes);
   if (mode === "realtime") return realtime;
-  const until = Math.min(closingMinute, T.until20Minute);
-  return until > from ? until : realtime;
+  // second mode: until the fridge's closing time (set per fridge in Настройки)
+  return closingMinute > from ? closingMinute : realtime;
 }
 
 export type MissionDraft = Pick<

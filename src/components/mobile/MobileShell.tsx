@@ -7,7 +7,7 @@ import clsx from "clsx";
 import { useQueryClient } from "@tanstack/react-query";
 import { atLeast, logout, useMe } from "@/lib/client/api";
 import { flushOutbox, outboxSize } from "@/lib/client/offline";
-import { fmtClock } from "@/lib/client/format";
+import { LiveClock } from "@/components/LiveClock";
 
 const TABS = [
   { href: "/m", label: "Сегодня", icon: "🏠" },
@@ -69,7 +69,7 @@ export function MobileShell({ children, now, title, back }: { children: ReactNod
               <div className="text-[15px] font-bold tracking-[0.14em]">FRIDGE OPS</div>
             )}
           </div>
-          {now !== undefined && <div className="num font-mono text-[15px] text-ink-2">{fmtClock(now)}</div>}
+          {now !== undefined && <LiveClock serverNow={now} className="num font-mono text-[15px] text-ink-2" />}
           <button onClick={() => setMenu(!menu)} className="grid h-11 w-11 place-items-center rounded-xl text-[20px] text-ink-2 active:bg-surface-2" aria-label="Меню">
             ⋯
           </button>

@@ -19,6 +19,10 @@ const ALERT_MINUTES = 45;
 const DEDUPE_MINUTES = 120;
 const MAX_PER_RUN = 3;
 
+const CAT_NOM: Record<string, string> = {
+  breakfast: "завтраки", hot: "горячие блюда", salad: "салаты", snack: "перекусы", dessert: "десерты", drink: "напитки",
+};
+
 const CAT_GEN: Record<string, string> = {
   breakfast: "завтраков", hot: "горячих блюд", salad: "салатов", snack: "перекусов", dessert: "десертов", drink: "напитков",
 };
@@ -73,7 +77,7 @@ export function detectAlerts(snap: NetworkSnapshot, a: AnalysisResult, state: Ap
       at: snap.now,
       key,
       level: minutes <= 20 ? "critical" : "warning",
-      title: minutes === 0 ? `🔴 ${fr.name}: закончились ${CAT_GEN[cat.id]}` : `🔴 ${fr.name} может остаться без ${CAT_GEN[cat.id]} через ${minutes} мин`,
+      title: minutes === 0 ? `🔴 ${fr.name}: закончились ${CAT_NOM[cat.id]}` : `🔴 ${fr.name} может остаться без ${CAT_GEN[cat.id]} через ${minutes} мин`,
       body: mission ? `Задача #${mission.number} уже в очереди.` : "Проверьте остатки.",
       fridgeId: fr.id,
       missionId: mission?.id ?? null,

@@ -5,7 +5,8 @@ import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 import clsx from "clsx";
 import { atLeast, logout, useMe } from "@/lib/client/api";
-import { fmtClock, fmtDay } from "@/lib/client/format";
+import { fmtDay } from "@/lib/client/format";
+import { LiveClock } from "@/components/LiveClock";
 
 const NAV = [
   { href: "/", label: "Command Center", short: "Center", role: "MANAGER" as const },
@@ -57,7 +58,7 @@ export function Shell({
               <div className="flex items-center gap-2 whitespace-nowrap rounded-md border border-line bg-surface px-2.5 py-1 text-[12px]">
                 {mode === "mock" && <span className="rounded bg-accent/15 px-1.5 py-px text-[10px] font-semibold tracking-wider text-accent">SIM</span>}
                 <span className="hidden text-ink-3 sm:inline">{fmtDay(now)}</span>
-                <span className="num font-mono text-ink">{fmtClock(now)}</span>
+                <LiveClock serverNow={now} className="num font-mono text-ink" />
               </div>
             )}
             {player && (

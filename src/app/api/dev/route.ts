@@ -3,7 +3,7 @@ import { currentUser, handle } from "@/lib/server/http";
 import { getRuntime } from "@/lib/server/runtime";
 
 const Body = z.object({
-  action: z.enum(["advance15", "advance60", "advance180", "sales", "shortage", "overstock", "anomaly", "reset-day", "analyze", "reseed"]),
+  action: z.enum(["advance15", "advance60", "advance180", "to-close", "now", "sales", "shortage", "overstock", "anomaly", "reset-day", "analyze", "reseed"]),
 });
 
 /** DEV PANEL — simulator only. Never touches KitShop. */
