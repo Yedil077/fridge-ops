@@ -83,7 +83,10 @@ class Runtime {
         return self.state;
       },
       adapterFor,
-      now: () => (this.sim ? this.sim.now : wallClockNow(TZ)),
+      isPaused: () => !!this.state.kitshopAdmin?.writesPaused,
+      flush: () => this.flushNow(),
+      // operations are stamped with REAL wall-clock time (KiT Shop reconciliation windows depend on it), not simulator time
+      now: () => wallClockNow(TZ),
       save: () => this.save(),
       newId,
       timeoutMs: writeGate().timeoutMs,
@@ -706,6 +709,7 @@ class Runtime {
     const m = this.mappingFor(snap, productId);
     if (m.status === "MAPPED") throw new HttpError(409, "Товар уже есть в KiT Shop");
     if (m.reason === "ambiguous") throw new HttpError(409, "В KiT Shop несколько товаров с этим штрихкодом — сначала разберитесь с дублями");
+    if (this.state.kitshopAdmin?.writesPaused) throw new HttpError(423, "Запись в KiT Shop приостановлена (PAUSE ALL WRITES)");
     const input: CatalogProductInput = { name: p.name, barcode: p.barcode, vendorCode: p.sku, price: p.price || null, unitType: 1, taxType: 0, accuracyType: 1 };
     const adapter = catalogAdapter();
     const body = addProductBody(input);
@@ -883,6 +887,7 @@ class Runtime {
           operations: this.state.operations,
           audit: this.state.audit,
           productMappings: this.state.productMappings,
+          kitshopAdmin: this.state.kitshopAdmin,
           fridgeSettings: this.state.fridgeSettings,
           travelOverrides: this.state.travelOverrides,
           settingsVersion: this.state.settingsVersion + 1,

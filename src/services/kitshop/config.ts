@@ -50,8 +50,6 @@ export interface KitShopWriteConfig {
   shops: string[];
   /** ms to wait for KiT Shop before the operation becomes UNKNOWN */
   timeoutMs: number;
-  /** set to true after Phase D proved that MakeFillUp.Notes comes back in GetFillUps */
-  notesRoundTripVerified: boolean;
 }
 
 export function readKitShopWriteConfig(): KitShopWriteConfig {
@@ -60,7 +58,6 @@ export function readKitShopWriteConfig(): KitShopWriteConfig {
     dryRun: process.env.KITSHOP_WRITE_DRY_RUN !== "false",
     shops: (process.env.KITSHOP_WRITE_SHOPS ?? "").split(",").map((s) => s.trim()).filter(Boolean),
     timeoutMs: Math.min(30_000, Math.max(3_000, Number(process.env.KITSHOP_WRITE_TIMEOUT_MS) || 10_000)),
-    notesRoundTripVerified: process.env.KITSHOP_NOTES_VERIFIED === "true",
   };
 }
 

@@ -31,9 +31,11 @@ test("KitShop writes: only documented methods, gated, nothing destructive", () =
     if (!/\.(ts|tsx)$/.test(f)) continue;
     assert.doesNotMatch(code(f), /"(DeleteProduct|DeleteProductGroup|RemoveProductFromProductBaseTemplate|AddCommand)"/, `${f} must not call destructive / lock methods`);
   }
-  assert.match(writer, /assertOpen\(req\.shopId\)/, "MakeFillUp re-checks the gate and the shop allowlist");
+  assert.match(writer, /gateClosed\(req\.shopId\)/, "MakeFillUp re-checks the gate and the shop allowlist");
   const gate = code("src/lib/server/kitshopWrite.ts");
   assert.match(gate, /config\.enabled && gate\.writeEnabled && !gate\.dryRun && gate\.shops\.length > 0/);
+  assert.match(gate, /a\.scope === "all" \|\| origin === "write-test"/, "scope=test: only the admin write test may write live");
+  assert.match(gate, /return mode !== "live";/, "live: an absent UUID is never trusted as not applied");
   const cfg = code("src/services/kitshop/config.ts");
   assert.match(cfg, /writeEnabled: process\.env\.KITSHOP_WRITE_ENABLED === "true"/, "writes are off unless explicitly true");
   assert.match(cfg, /dryRun: process\.env\.KITSHOP_WRITE_DRY_RUN !== "false"/, "dry-run is on unless explicitly false");

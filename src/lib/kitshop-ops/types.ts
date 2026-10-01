@@ -23,7 +23,10 @@ export type OpStatus =
 
 export type AdapterMode = "mock" | "dry-run" | "live";
 
+export type OpOrigin = "app" | "write-test";
+
 export type OpErrorCode =
+  | "WRITES_PAUSED"
   | "MAPPING_REQUIRED"
   | "NOT_IN_SHOP_BASE"
   | "NO_RIGHTS"
@@ -78,6 +81,8 @@ export interface KsOperation {
   dependsOn: string | null;
   /** apply the confirmed change to the simulator (standalone ops in MOCK mode; missions move stock themselves) */
   applyToSim: boolean;
+  /** "write-test" = the admin REAL WRITE TEST wizard (the only origin allowed to write live while KITSHOP_WRITE_SCOPE=test) */
+  origin?: OpOrigin;
   history: OpHistoryEntry[];
 }
 

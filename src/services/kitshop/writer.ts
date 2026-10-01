@@ -24,13 +24,16 @@ export class KitShopLiveWriter implements KitShopWriteAdapter {
     private reader: KitShopReadOnlyClient,
   ) {}
 
-  private assertOpen(shopId?: string) {
-    if (!this.config.enabled || !this.gate.writeEnabled || this.gate.dryRun) throw new Error("KiT Shop write gate is closed");
-    if (shopId !== undefined && !this.gate.shops.includes(shopId)) throw new Error(`Shop ${shopId} is not in KITSHOP_WRITE_SHOPS`);
+  /** null = open; otherwise why the write must not leave the server (a definite "not sent", never UNKNOWN) */
+  private gateClosed(shopId?: string): string | null {
+    if (!this.config.enabled || !this.gate.writeEnabled || this.gate.dryRun) return "KiT Shop write gate is closed";
+    if (shopId !== undefined && !this.gate.shops.includes(shopId)) return `Shop ${shopId} is not in KITSHOP_WRITE_SHOPS`;
+    return null;
   }
 
   async makeFillUp(req: FillUpRequest): Promise<WriteOutcome> {
-    this.assertOpen(req.shopId);
+    const closed = this.gateClosed(req.shopId);
+    if (closed) return { kind: "rejected", code: -1, message: `Не отправлено: ${closed}` };
     if (req.lines.some((l) => !Number.isInteger(l.fillup) || l.fillup === 0)) return { kind: "rejected", code: 28, message: "Некорректное количество" };
     try {
       const env = await this.transport.call("MakeFillUp", fillUpBody(req), this.gate.timeoutMs + 5_000);
@@ -44,10 +47,13 @@ export class KitShopLiveWriter implements KitShopWriteAdapter {
     }
   }
 
-  /** GetFillUps for the shop around the send time → look for FO:<uuid> in Notes. */
+  /**
+   * GetFillUps for the shop around the send time → look for FO:<uuid> in Notes.
+   * ±6 h: the timezone of KiT Shop's FillupDateTime (Kaluga/Moscow vs Almaty) is not documented.
+   */
   async verifyFillUp(op: { id: string; shopId: string; sentAt: number }): Promise<VerifyOutcome> {
     try {
-      const list = await this.reader.getFillUps({ from: op.sentAt - 10 * 60_000, to: op.sentAt + 60 * 60_000, shopId: op.shopId });
+      const list = await this.reader.getFillUps({ from: op.sentAt - 6 * 3_600_000, to: op.sentAt + 6 * 3_600_000, shopId: op.shopId });
       const hit = list.find((f) => f.Notes?.includes(noteMarker(op.id)));
       return hit ? { kind: "found", fillupId: hit.FillupId } : { kind: "absent" };
     } catch (e) {
@@ -56,7 +62,8 @@ export class KitShopLiveWriter implements KitShopWriteAdapter {
   }
 
   async addProduct(p: CatalogProductInput): Promise<WriteOutcome & { productId?: string }> {
-    this.assertOpen();
+    const closed = this.gateClosed();
+    if (closed) return { kind: "rejected", code: -1, message: `Не отправлено: ${closed}` };
     try {
       const env = await this.transport.call("AddProduct", addProductBody(p), this.gate.timeoutMs + 5_000);
       if (env.ResultCode === 0 && env.Id !== undefined) return { kind: "ok", productId: String(env.Id) };

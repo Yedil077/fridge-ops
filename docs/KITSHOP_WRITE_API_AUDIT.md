@@ -182,3 +182,34 @@ dry-run adapter.
 | Stock screen: last sync + ОБНОВИТЬ | `/m/fridges/[id]`, `/m/scan` | ✅ (MOCK stock is live; real stock waits for the KiT Shop data source) |
 | Lock control | — | ⛔ not implemented (see §2.6) |
 | Availability / SATTI / shop-to-shop analytics | — | next step (needs real sales lines) |
+
+## 8. Production readiness audit (before Phase D)
+
+| Item | Finding | Fix |
+|---|---|---|
+| Auth / Sign | MD5(CompanyId+Password+RequestId); case not documented | `KITSHOP_SIGN_CASE`; ПРОВЕРИТЬ СОЕДИНЕНИЕ probes the other case on ResultCode 15 (CheckAuth is read-only) and tells which to set |
+| RequestId | each transport instance had its own sequence → reads and writes could collide (ResultCode 14) | **one transport per process** shared by reader + writer; still `yyMMddHHmmssfff`, strictly increasing, serialized |
+| RequestId across instances | Render zero-downtime deploys briefly run 2 instances | don't run the write test during a deploy |
+| MakeFillUp gate | a closed gate threw → operation became UNKNOWN | now a definite "not sent" rejection (FAILED, never UNKNOWN) |
+| Crash between send and save | the PENDING record was saved asynchronously | a LIVE write is **persisted (awaited) before** it leaves the server |
+| Live writes scope | an allowlisted shop received live writes from every screen and mission | `KITSHOP_WRITE_SCOPE=test` (default): only the admin REAL WRITE TEST writes live; everything else on that shop → dry-run |
+| UNKNOWN reconciliation | absent UUID could become FAILED for live after a window | LIVE: found in GetFillUps → CONFIRMED, not found → **REQUIRES_REVIEW**; never re-sent automatically |
+| GetFillUps window | ±10/60 min, KiT Shop timezone undocumented | ±6 h around the send time |
+| Late answer | ignored once an op was REQUIRES_REVIEW | accepted for UNKNOWN and REQUIRES_REVIEW |
+| Operation timestamps | simulator clock (could be ahead after DEV "+1 h") | real wall-clock time |
+| Duplicate protection | by operation_uuid | ✓ (checked again by the wizard) |
+| Timeout | 10 s → UNKNOWN, transport keeps 15 s for a late answer | ✓ |
+| Audit log | create/result/verify/retry/resolve + pause/resume, test shop/product, connection checks | ✓ |
+| Dry-run | logs body without Auth, sends nothing | ✓ |
+| Emergency stop | — | **PAUSE ALL WRITES** (database flag): every LOAD/UNLOAD/WRITE-OFF/AddProduct is blocked before any adapter; reads keep working |
+
+## 9. Phase D procedure (`/admin/kitshop/diagnostics`)
+
+1. Render → Environment: `KITSHOP_ENABLED=true`, `KITSHOP_COMPANY_ID`, `KITSHOP_LOGIN`, `KITSHOP_PASSWORD` (API user), keep `KITSHOP_WRITE_ENABLED=false`. Deploy.
+2. ПРОВЕРИТЬ СОЕДИНЕНИЕ → CONNECTED (set `KITSHOP_SIGN_CASE` if the page asks).
+3. Choose TEST SHOP and TEST PRODUCT (stock is read from GetShopStocks).
+4. Only then: `KITSHOP_WRITE_ENABLED=true`, `KITSHOP_WRITE_DRY_RUN=false`, `KITSHOP_WRITE_SHOPS=<that one ShopId>`, `KITSHOP_WRITE_SCOPE=test`. Deploy.
+5. REAL WRITE TEST: step 1 → prepare LOAD +1 (preview) → **ПОДТВЕРДИТЬ ТЕСТОВУЮ ЗАГРУЗКУ +1** → stock read back → prepare UNLOAD −1 → confirm → summary.
+6. Afterwards set `KITSHOP_WRITE_ENABLED=false` again until the next phase is approved.
+
+Rehearsal: `node scripts/dev-fake-kitshop.mjs` runs the whole flow against a **local fake** KiT Shop (port 4010) — passed 2026-10-01: CheckAuth PASS, LOAD 7→8, UNLOAD 8→7, UUIDs found in GetFillUps, exactly 2 MakeFillUp calls, ~270 ms per call.

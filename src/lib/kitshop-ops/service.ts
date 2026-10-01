@@ -5,6 +5,7 @@ import {
   type KsOperation,
   type OpErrorCode,
   type OpLine,
+  type OpOrigin,
   type OpStatus,
   type OpType,
   type WriteOutcome,
@@ -30,7 +31,11 @@ export interface OpsState {
 
 export interface OpsDeps {
   state: OpsState;
-  adapterFor(shopId: string): KitShopWriteAdapter;
+  adapterFor(shopId: string, origin?: OpOrigin): KitShopWriteAdapter;
+  /** PAUSE ALL WRITES (server-side flag): nothing is handed to any adapter while true */
+  isPaused?(): boolean;
+  /** durable save — awaited before a LIVE send, so a crash can never lose the record of a sent write */
+  flush?(): Promise<void>;
   /** wall-clock ms */
   now(): number;
   save(): void;
@@ -56,6 +61,12 @@ export interface SubmitInput {
   transferRole?: "source" | "target" | null;
   dependsOn?: string | null;
   applyToSim?: boolean;
+  origin?: OpOrigin;
+}
+
+/** MakeFillUp.Notes — starts with the FO:<uuid> marker used for reconciliation through GetFillUps. */
+export function fillUpNotes(op: { id: string; type: OpType; reason?: string | null; missionId?: string | null }, user: string): string {
+  return `${noteMarker(op.id)} ${op.type}${op.reason ? ` ${op.reason}` : ""}${op.missionId ? ` mission ${op.missionId}` : ""} by ${user}`.slice(0, 250);
 }
 
 export class OpsError extends Error {
@@ -118,6 +129,7 @@ export class OpsService {
       this.audit(user, "op.duplicate_submit", "operation", existing.id, { status: existing.status });
       return { op: existing, duplicate: true };
     }
+    this.assertNotPaused();
     this.validate(input);
     const now = this.d.now();
     const op: KsOperation = {
@@ -137,12 +149,13 @@ export class OpsService {
       attempts: 0,
       confirmedAt: null,
       kitshopFillupId: null,
-      adapterMode: this.d.adapterFor(input.shopId).mode,
+      adapterMode: this.d.adapterFor(input.shopId, input.origin).mode,
       missionId: input.missionId ?? null,
       transferId: input.transferId ?? null,
       transferRole: input.transferRole ?? null,
       dependsOn: input.dependsOn ?? null,
       applyToSim: input.applyToSim ?? false,
+      origin: input.origin ?? "app",
       history: [{ at: now, status: "DRAFT", note: "создано" }],
     };
     this.d.state.operations.push(op);
@@ -155,6 +168,10 @@ export class OpsService {
     this.d.save();
     await this.send(op, user);
     return { op, duplicate: false };
+  }
+
+  private assertNotPaused() {
+    if (this.d.isPaused?.()) throw new OpsError(423, "WRITES_PAUSED", "Запись в KiT Shop приостановлена администратором (PAUSE ALL WRITES)");
   }
 
   private validate(input: SubmitInput) {
@@ -188,7 +205,14 @@ export class OpsService {
         return;
       }
     }
-    const adapter = this.d.adapterFor(op.shopId);
+    if (this.d.isPaused?.()) {
+      // blocked BEFORE anything reaches KiT Shop; stays where it is until writes are resumed
+      op.errorCode = "WRITES_PAUSED";
+      op.error = "Запись приостановлена (PAUSE ALL WRITES)";
+      this.d.save();
+      return;
+    }
+    const adapter = this.d.adapterFor(op.shopId, op.origin);
     op.adapterMode = adapter.mode;
     op.errorCode = null;
     op.error = null;
@@ -196,9 +220,11 @@ export class OpsService {
     op.attempts += 1;
     this.setStatus(op, "PENDING", `отправка (${adapter.mode})`);
     this.d.save();
+    // a live write must be on disk BEFORE it leaves the server (crash after sending ≠ forgotten operation)
+    if (adapter.mode === "live" && this.d.flush) await this.d.flush();
 
     const sign = op.type === "LOAD" ? 1 : -1;
-    const notes = `${noteMarker(op.id)} ${op.type}${op.reason ? ` ${op.reason}` : ""}${op.missionId ? ` mission ${op.missionId}` : ""} by ${user}`.slice(0, 250);
+    const notes = fillUpNotes(op, user);
     const call = adapter.makeFillUp({
       operationId: op.id,
       shopId: op.shopId,
@@ -215,7 +241,7 @@ export class OpsService {
       this.apply(op, { kind: "unknown", reason: `KiT Shop не ответил за ${Math.round(this.d.timeoutMs / 1000)} с` }, user);
       // a late answer still counts — but only while nobody decided otherwise
       call.then((late) => {
-        if (op.status === "UNKNOWN") {
+        if (op.status === "UNKNOWN" || op.status === "REQUIRES_REVIEW") {
           this.apply(op, late, "system");
           this.d.save();
         }
@@ -261,7 +287,7 @@ export class OpsService {
   async verify(id: string, user: string): Promise<KsOperation> {
     const op = this.require(id);
     if (op.status !== "UNKNOWN" && op.status !== "REQUIRES_REVIEW" && op.status !== "PENDING") return op;
-    const adapter = this.d.adapterFor(op.shopId);
+    const adapter = this.d.adapterFor(op.shopId, op.origin);
     const res = await adapter.verifyFillUp({ id: op.id, shopId: op.shopId, sentAt: op.sentAt ?? op.createdAt }).catch((e) => ({
       kind: "unverifiable" as const,
       reason: e instanceof Error ? e.message : "проверка не удалась",
@@ -296,6 +322,7 @@ export class OpsService {
     if (op.status === "UNKNOWN" || op.status === "REQUIRES_REVIEW" || op.status === "PENDING")
       throw new OpsError(409, "CONFLICT", "Статус неизвестен — сначала проверка, повторная отправка может задвоить товар");
     if (op.status === "CONFIRMED") throw new OpsError(409, "CONFLICT", "Операция уже подтверждена");
+    this.assertNotPaused();
     this.audit(user, "op.retry", "operation", op.id, { from: op.status });
     await this.send(op, user);
     return op;
@@ -323,7 +350,8 @@ export class OpsService {
   async tick(user = "system"): Promise<{ sent: number; verified: number }> {
     let sent = 0;
     let verified = 0;
-    for (const op of this.d.state.operations.filter((o) => o.status === "WAITING_FOR_CONNECTION")) {
+    const paused = !!this.d.isPaused?.();
+    for (const op of paused ? [] : this.d.state.operations.filter((o) => o.status === "WAITING_FOR_CONNECTION")) {
       await this.send(op, user);
       sent++;
     }

@@ -38,7 +38,8 @@ export function handle<T extends unknown[]>(fn: (...args: T) => Promise<unknown>
       if (e instanceof HttpError || e instanceof AuthError) return NextResponse.json({ error: e.message }, { status: e.status });
       if (e instanceof ZodError) return NextResponse.json({ error: "Некорректный запрос", issues: e.issues }, { status: 400 });
       if (isOpsError(e)) return NextResponse.json({ error: e.message, code: e.code, details: e.details ?? null }, { status: e.status });
-      if (e instanceof KitShopNotReadyError) return NextResponse.json({ error: e.message, code: "KITSHOP_NOT_READY" }, { status: 503 });
+      if (e instanceof KitShopNotReadyError || (e as Error)?.name === "KitShopNotReadyError") return NextResponse.json({ error: (e as Error).message, code: "KITSHOP_NOT_READY" }, { status: 503 });
+      if ((e as Error)?.name === "KitShopResultError") return NextResponse.json({ error: (e as Error).message, code: "KITSHOP_ERROR" }, { status: 502 });
       console.error(e);
       return NextResponse.json({ error: "Внутренняя ошибка" }, { status: 500 });
     }

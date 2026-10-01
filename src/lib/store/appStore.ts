@@ -4,6 +4,7 @@ import type { Mission, Weekday } from "../domain/types";
 import type { LearningState } from "../engine/feedback";
 import type { ConfirmedMapping } from "../kitshop-ops/mapping";
 import type { AuditEntry, KsOperation } from "../kitshop-ops/types";
+import type { KitShopAdminState } from "../kitshop-ops/writeTest";
 import type { SimState } from "../simulator/simulator";
 
 /**
@@ -142,6 +143,8 @@ export interface AppState {
   audit: AuditEntry[];
   /** confirmed Fridge Ops product → KiT Shop product links (our product id → mapping) */
   productMappings: Record<string, ConfirmedMapping>;
+  /** PAUSE ALL WRITES flag, Phase D test shop / product and the REAL WRITE TEST run */
+  kitshopAdmin: KitShopAdminState;
 }
 
 const MAX_MISSIONS = 1500;
@@ -181,6 +184,7 @@ export function emptyState(): AppState {
     operations: [],
     audit: [],
     productMappings: {},
+    kitshopAdmin: { writesPaused: false, pausedBy: null, pausedAt: null, testShop: null, testProduct: null, writeTest: null },
   };
 }
 
@@ -230,7 +234,7 @@ export interface StateStore {
 
 export class FileStore implements StateStore {
   readonly kind = "file" as const;
-  private dir = path.join(process.cwd(), ".data");
+  private dir = path.join(process.cwd(), process.env.FILE_STORE_DIR || ".data");
   private file = path.join(this.dir, "app-state.json");
 
   async load(): Promise<AppState> {

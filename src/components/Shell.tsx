@@ -12,6 +12,7 @@ const NAV = [
   { href: "/", label: "Command Center", short: "Center", role: "MANAGER" as const },
   { href: "/analytics", label: "Analytics", short: "Analytics", role: "ADMIN" as const },
   { href: "/admin/products", label: "Товары", short: "🏷", role: "ADMIN" as const },
+  { href: "/admin/kitshop/diagnostics", label: "KiT Shop", short: "🔌", role: "ADMIN" as const },
   { href: "/admin", label: "Настройки", short: "⚙️", role: "ADMIN" as const },
 ];
 

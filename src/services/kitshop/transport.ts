@@ -53,9 +53,20 @@ export function createRequestIdGenerator(clock: () => Date = () => new Date()) {
   };
 }
 
-/** Sign = MD5(CompanyId + Password + RequestId), hex. Case accepted by the server is verified in Phase D. */
-export function signRequest(companyId: string | number, password: string, requestId: number): string {
-  return createHash("md5").update(`${companyId}${password}${requestId}`, "utf8").digest("hex");
+/** Sign = MD5(CompanyId + Password + RequestId), hex. The docs show both cases; KITSHOP_SIGN_CASE picks one (checked by the diagnostics). */
+export function signRequest(companyId: string | number, password: string, requestId: number, upper = false): string {
+  const hex = createHash("md5").update(`${companyId}${password}${requestId}`, "utf8").digest("hex");
+  return upper ? hex.toUpperCase() : hex;
+}
+
+/** Outcome of every call — for the diagnostics page (no bodies, no credentials). */
+export interface CallRecord {
+  method: string;
+  at: number;
+  ms: number;
+  ok: boolean;
+  resultCode: number | null;
+  error: string | null;
 }
 
 /** dd.MM.yyyy HH:mm:ss from our wall-clock ms (UTC fields = local time). */
@@ -74,33 +85,52 @@ export function parseKitshopDate(s: string): number | null {
 
 type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
 
-const NOT_SENT_CODES = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "ENETUNREACH", "EHOSTUNREACH"]);
+/** connection never established → the request provably did not reach KiT Shop */
+const NOT_SENT_CODES = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "ENETUNREACH", "EHOSTUNREACH", "UND_ERR_CONNECT_TIMEOUT"]);
 
 export class KitShopTransport {
   readonly #config: KitShopConfig;
   readonly #fetch: FetchLike;
   readonly #nextRequestId: () => number;
+  readonly #onCall?: (r: CallRecord) => void;
   #queue: Promise<unknown> = Promise.resolve();
+  /** Sign in upper case (KITSHOP_SIGN_CASE=upper); can be switched by the diagnostics after a CheckAuth probe */
+  signUpper: boolean;
 
-  constructor(config: KitShopConfig, opts: { fetch?: FetchLike; nextRequestId?: () => number } = {}) {
+  constructor(
+    config: KitShopConfig,
+    opts: { fetch?: FetchLike; nextRequestId?: () => number; onCall?: (r: CallRecord) => void; signUpper?: boolean } = {},
+  ) {
     this.#config = config;
     this.#fetch = opts.fetch ?? ((url, init) => fetch(url, init));
     this.#nextRequestId = opts.nextRequestId ?? createRequestIdGenerator();
+    this.#onCall = opts.onCall;
+    this.signUpper = opts.signUpper ?? false;
   }
 
   /** Serialized: RequestId order = arrival order. */
-  call(method: string, params: Record<string, unknown>, timeoutMs = 20_000): Promise<KitShopEnvelope> {
-    const run = this.#queue.then(() => this.#send(method, params, timeoutMs));
+  call(method: string, params: Record<string, unknown>, timeoutMs = 20_000, opts: { signUpper?: boolean } = {}): Promise<KitShopEnvelope> {
+    const run = this.#queue.then(async () => {
+      const t0 = Date.now();
+      try {
+        const env = await this.#send(method, params, timeoutMs, opts.signUpper ?? this.signUpper);
+        this.#onCall?.({ method, at: t0, ms: Date.now() - t0, ok: env.ResultCode === 0 || env.ResultCode === 100, resultCode: env.ResultCode, error: env.ResultCode === 0 ? null : (env.ErrorMessage ?? env.Response ?? null) });
+        return env;
+      } catch (e) {
+        this.#onCall?.({ method, at: t0, ms: Date.now() - t0, ok: false, resultCode: null, error: e instanceof Error ? e.message : "error" });
+        throw e;
+      }
+    });
     this.#queue = run.catch(() => undefined);
     return run;
   }
 
-  async #send(method: string, params: Record<string, unknown>, timeoutMs: number): Promise<KitShopEnvelope> {
+  async #send(method: string, params: Record<string, unknown>, timeoutMs: number, signUpper: boolean): Promise<KitShopEnvelope> {
     const c = this.#config;
     if (!c.companyId || !c.login || !c.password) throw new KitShopTransportError("unreachable", "KiT Shop credentials are not configured");
     const requestId = this.#nextRequestId();
     const body = {
-      Auth: { CompanyId: Number(c.companyId), RequestId: requestId, UserLogin: c.login, Sign: signRequest(c.companyId, c.password, requestId) },
+      Auth: { CompanyId: Number(c.companyId), RequestId: requestId, UserLogin: c.login, Sign: signRequest(c.companyId, c.password, requestId, signUpper) },
       ...params,
     };
     const base = (c.baseUrl || DEFAULT_BASE_URL).replace(/\/+$/, "");
