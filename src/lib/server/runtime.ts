@@ -135,15 +135,23 @@ class Runtime {
     if (behind < 15) return;
     this.catchingUp = true;
     try {
-      if (behind > 36 * 60) {
+      // Must stay cheap: on a sleeping free server the first request pays for the catch-up.
+      if (dayNumber(target) !== this.sim.state.day) {
+        // slept into a new day: close the old one (evaluate what we can) and start today directly
+        const old = this.simSnapshot();
+        this.evaluateDue(old, true);
+        for (const m of this.state.missions)
+          if (m.status === "NEW" || m.status === "ACCEPTED" || m.status === "IN_PROGRESS") m.status = "EXPIRED";
+        this.dayBonus(old.today.day);
         this.sim = Simulator.create(this.sim.state.seed, dayNumber(target), minuteOfDay(target) - (minuteOfDay(target) % 15));
         this.state.sim = this.sim.state;
         this.cache.clear();
-        this.runHourlySync();
-        this.save();
       } else {
-        this.advance(behind - (behind % 15));
+        // same day: play the sales, but analyse only once at the end
+        this.advance(behind - (behind % 15), false);
       }
+      this.runHourlySync();
+      this.save();
     } finally {
       this.catchingUp = false;
     }
@@ -566,8 +574,11 @@ class Runtime {
     return this.sim;
   }
 
-  /** Advances the simulated clock in 15-min steps: evaluates missions and runs the hourly analysis on the hour. */
-  advance(minutes: number): { missionsCreated: number } {
+  /**
+   * Advances the simulated clock in 15-min steps: evaluates missions and (by default) runs the hourly analysis on the hour.
+   * hourlyAnalysis=false is used by the real-time catch-up, which analyses once at the end.
+   */
+  advance(minutes: number, hourlyAnalysis = true): { missionsCreated: number } {
     const sim = this.requireSim();
     let created = 0;
     let left = minutes;
@@ -581,11 +592,11 @@ class Runtime {
         this.dayBonus(snap.today.day);
       });
       left -= 15;
+      const onTheHour = sim.state.minute % ENGINE_CONFIG.analysisIntervalMinutes === 0;
+      if (!hourlyAnalysis && !onTheHour) continue;
       const snap = this.simSnapshot();
       this.evaluateDue(snap);
-      if (minuteOfDay(snap.now) % ENGINE_CONFIG.analysisIntervalMinutes === 0) {
-        created += this.createMissions(snap).length;
-      }
+      if (hourlyAnalysis && onTheHour) created += this.createMissions(snap).length;
     }
     this.save();
     return { missionsCreated: created };
