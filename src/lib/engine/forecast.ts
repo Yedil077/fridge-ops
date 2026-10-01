@@ -1,6 +1,7 @@
 import { ENGINE_CONFIG } from "../config/engine";
 import { QUARTERS, type CategoryForecast, type FridgeForecast } from "../domain/types";
-import { isWorkingDay, baselineFor, monthPhaseFactor, trendFactor, typicalDay, type EngineContext } from "./history";
+import { activityProfile, activityWindow } from "./activity";
+import { baselineFor, monthPhaseFactor, openProbability, trendFactor, typicalDay, type EngineContext } from "./history";
 import { classify, fridgeHealth, fridgeStatus, safetyStock, wasteUnits } from "./risk";
 
 /**
@@ -9,7 +10,21 @@ import { classify, fridgeHealth, fridgeStatus, safetyStock, wasteUnits } from ".
  * Levels 2–6 are blended inside `baselineFor` via recency buckets and shrinkage; level 1 is applied here.
  */
 
-/** Sum of hourly values over [fromMin, toMin) with fractional hours. */
+/**
+ * Sum over [fromMin, toMin) where minutes count from TODAY's 00:00 and may exceed 1440:
+ * the part after midnight is taken from tomorrow's curve (REAL TIME at 23:20 → 23:20–00:50).
+ */
+export function sumAcross(today: number[], tomorrow: number[], fromMin: number, toMin: number): number {
+  if (toMin <= fromMin) return 0;
+  return sumWindow(today, fromMin, Math.min(toMin, 1440)) + (toMin > 1440 ? sumWindow(tomorrow, Math.max(0, fromMin - 1440), toMin - 1440) : 0);
+}
+
+/** Hourly rate at minute m counted from today's 00:00 (m ≥ 1440 → tomorrow). */
+export function rateAt(today: number[], tomorrow: number[], m: number): number {
+  return m < 1440 ? today[Math.floor(m / 60)] : (tomorrow[Math.floor((m - 1440) / 60)] ?? 0);
+}
+
+/** Sum of hourly values over [fromMin, toMin) within one calendar day, with fractional hours. */
 export function sumWindow(hourly: number[], fromMin: number, toMin: number): number {
   if (toMin <= fromMin) return 0;
   let s = 0;
@@ -35,15 +50,27 @@ function shrinkPace(actual: number, expected: number, toward = 1): number {
 
 export function forecastFridge(ctx: EngineContext, f: number): FridgeForecast {
   const { snap, C, today, nowMinute } = ctx;
-  const fr = snap.fridges[f];
   const cfgPace = ENGINE_CONFIG.pace;
-  const workingToday = isWorkingDay(fr, today, ctx.holidays);
-  const workingTomorrow = isWorkingDay(fr, today + 1, ctx.holidays);
-  const isOpenNow = workingToday && nowMinute >= fr.openingMinute && nowMinute < fr.closingMinute;
-  const minutesToClose = workingToday ? Math.max(0, fr.closingMinute - nowMinute) : 0;
-  const minutesToOpen = workingToday && nowMinute < fr.openingMinute ? fr.openingMinute - nowMinute : null;
   const qNow = Math.floor(nowMinute / 15);
   const monthF = monthPhaseFactor(ctx, f);
+  const monthTomorrow = monthPhaseFactor(ctx, f, today + 1);
+  // learned P(the fridge sells today / tomorrow) — the configured schedule is only a weak prior
+  const pToday = openProbability(ctx, f, today);
+  const pTomorrow = openProbability(ctx, f, today + 1);
+  let soldToday = 0;
+  for (let i = f * C * QUARTERS; i < (f + 1) * C * QUARTERS; i++) soldToday += snap.today.quarterSales[i];
+  let soldLastHour = 0;
+  for (let c = 0; c < C; c++)
+    for (let q = Math.max(0, qNow - 4); q < qNow; q++) soldLastHour += snap.today.quarterSales[(f * C + c) * QUARTERS + q];
+  // a day with sales is an open day: use the open-day curve; otherwise weight it by P(open)
+  const todayFactor = soldToday > 0 ? 1 : pToday;
+  const workingToday = soldToday > 0 || pToday >= 0.5;
+  const workingTomorrow = pTomorrow >= 0.5;
+  const activity = activityWindow(activityProfile(ctx, f), today, nowMinute);
+  const isOpenNow = activity.activeNow || soldLastHour > 0;
+  const activityEnd = isOpenNow && !activity.activeNow ? Math.max(activity.end, nowMinute + 60) : activity.end;
+  const minutesToClose = isOpenNow ? Math.max(0, activityEnd - nowMinute) : 0;
+  const minutesToOpen = !isOpenNow && activity.nextStart !== null ? activity.nextStart - nowMinute : null;
 
   // pass 1: normal curve and pace inputs per category
   const pre = [];
@@ -54,7 +81,9 @@ export function forecastFridge(ctx: EngineContext, f: number): FridgeForecast {
     const base = baselineFor(ctx, f, c);
     const tf = trendFactor(ctx, f, c);
     const bias = ctx.bias(f, c);
-    const normalHourly = base.hourly.map((v) => (workingToday ? v * tf * monthF * bias : 0));
+    const normalHourly = base.hourly.map((v) => v * todayFactor * tf * monthF * bias);
+    const baseTomorrow = baselineFor(ctx, f, c, today + 1);
+    const normalTomorrow = baseTomorrow.hourly.map((v) => v * pTomorrow * tf * monthTomorrow * bias);
     let expSoFar = 0;
     let actSoFar = 0;
     let catSales = 0;
@@ -74,14 +103,14 @@ export function forecastFridge(ctx: EngineContext, f: number): FridgeForecast {
     fridgeExpected += expSoFar;
     fridgeActual += actSoFar;
     salesToday += catSales;
-    pre.push({ base, tf, bias, normalHourly, expSoFar, actSoFar, catSales, lastHour, last2h });
+    pre.push({ base, tf, bias, normalHourly, normalTomorrow, expSoFar, actSoFar, catSales, lastHour, last2h });
   }
 
   const fridgePace = Math.min(cfgPace.max, Math.max(cfgPace.min, shrinkPace(fridgeActual, fridgeExpected)));
   const typical = typicalDay(ctx, f);
   const categories: CategoryForecast[] = [];
-  const nowFrom = Math.max(nowMinute, fr.openingMinute);
-  const close = fr.closingMinute;
+  const riskEnd = nowMinute + ENGINE_CONFIG.riskHorizonMinutes;
+  let restOfCalendarDay = 0;
 
   for (let c = 0; c < C; c++) {
     const p = pre[c];
@@ -89,13 +118,16 @@ export function forecastFridge(ctx: EngineContext, f: number): FridgeForecast {
     const catPace = Math.min(cfgPace.max, Math.max(cfgPace.min, fridgePace * shrinkPace(p.actSoFar, p.expSoFar * fridgePace)));
     const effect = 1 + cfgPace.weight * (catPace - 1);
     const forecastHourly = p.normalHourly.map((v) => v * effect);
+    // today's pace says something about tomorrow too, but less
+    const tomorrowHourly = p.normalTomorrow.map((v) => v * (1 + 0.5 * (effect - 1)));
     let stock = 0;
     for (const pi of ctx.catProducts[c]) stock += snap.stock[f * ctx.P + pi];
 
-    const open = workingToday && nowMinute < close;
-    const e1 = open ? sumWindow(forecastHourly, nowFrom, Math.min(close, nowFrom + 60)) : 0;
-    const e2 = open ? sumWindow(forecastHourly, nowFrom, Math.min(close, nowFrom + ENGINE_CONFIG.riskHorizonMinutes)) : 0;
-    const eClose = open ? sumWindow(forecastHourly, nowFrom, close) : 0;
+    // windows always start NOW and may cross midnight; the activity curve itself is ~0 where nobody buys
+    const e1 = sumAcross(forecastHourly, tomorrowHourly, nowMinute, nowMinute + 60);
+    const e2 = sumAcross(forecastHourly, tomorrowHourly, nowMinute, riskEnd);
+    const eClose = sumAcross(forecastHourly, tomorrowHourly, nowMinute, activityEnd);
+    restOfCalendarDay += sumWindow(forecastHourly, nowMinute, 1440);
 
     // confidence
     const hc = ENGINE_CONFIG.history;
@@ -106,12 +138,13 @@ export function forecastFridge(ctx: EngineContext, f: number): FridgeForecast {
 
     // time to empty at forecast rate
     let minutesToEmpty: number | null = null;
-    if (open) {
+    const emptyHorizon = Math.max(activityEnd, riskEnd);
+    if (isOpenNow || activityEnd > nowMinute) {
       if (stock <= 0) minutesToEmpty = 0;
       else {
         let cum = 0;
-        for (let m = nowFrom; m < close; m += 5) {
-          cum += forecastHourly[Math.floor(m / 60)] / 12;
+        for (let m = nowMinute; m < emptyHorizon; m += 5) {
+          cum += rateAt(forecastHourly, tomorrowHourly, m) / 12;
           if (cum >= stock) {
             minutesToEmpty = m + 5 - nowMinute;
             break;
@@ -121,8 +154,8 @@ export function forecastFridge(ctx: EngineContext, f: number): FridgeForecast {
     }
 
     const safety = safetyStock(e1);
-    const waste = open || workingToday ? wasteUnits(cat, stock, eClose, workingTomorrow) : 0;
-    const windowMinutes = Math.max(1, Math.min(close, nowFrom + 60) - nowFrom);
+    const waste = isOpenNow || workingToday ? wasteUnits(cat, stock, eClose, workingTomorrow) : 0;
+    const windowMinutes = 60;
     const partial = {
       stock,
       expected2h: e2,
@@ -137,10 +170,11 @@ export function forecastFridge(ctx: EngineContext, f: number): FridgeForecast {
       stock,
       normalHourly: p.normalHourly,
       forecastHourly,
+      tomorrowHourly,
       salesToday: p.catSales,
       salesLastHour: p.lastHour,
       salesLast2h: p.last2h,
-      velocity: open ? (e1 / windowMinutes) * 60 : 0,
+      velocity: (e1 / windowMinutes) * 60,
       expected1h: e1,
       expected2h: e2,
       expectedUntilClose: eClose,
@@ -172,9 +206,8 @@ export function forecastFridge(ctx: EngineContext, f: number): FridgeForecast {
     });
   }
 
-  // anomaly: projected day far outside the historical range
-  const remaining = categories.reduce((a, c) => a + c.expectedUntilClose, 0);
-  const projectedDayTotal = salesToday + remaining;
+  // anomaly: projected CALENDAR day (00:00–24:00, night hours included) far outside the historical range
+  const projectedDayTotal = salesToday + restOfCalendarDay;
   const an = ENGINE_CONFIG.anomaly;
   let anomaly: FridgeForecast["anomaly"] = null;
   if (workingToday && typical.n >= 4 && fridgeExpected >= an.minExpectedSoFar) {
@@ -197,6 +230,7 @@ export function forecastFridge(ctx: EngineContext, f: number): FridgeForecast {
     isWorkingTomorrow: workingTomorrow,
     minutesToClose,
     minutesToOpen,
+    activityEndMinute: activityEnd,
     salesToday,
     revenueToday: snap.today.revenue[f] ?? 0,
     pace: fridgePace,

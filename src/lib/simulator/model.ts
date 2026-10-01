@@ -1,5 +1,5 @@
 import { CATEGORIES } from "../domain/categories";
-import type { CategoryId, Fridge, HistoryCube, Product } from "../domain/types";
+import type { CategoryId, Fridge, HistoryCube, Product, Weekday } from "../domain/types";
 import { buildTravelMatrix } from "../engine/distance";
 import { hashSeed, lognormal, mulberry32, pickWeighted, poisson, type Rng } from "../random";
 import { dayNumber, dayOfMonth, daysInMonth, DAY_MS, weekdayOf } from "../time";
@@ -14,8 +14,13 @@ export interface SimModel {
   archetypes: Archetype[];
   fridges: Fridge[];
   products: Product[];
-  /** [f][c][96] share of the category's daily demand in each quarter-hour */
-  quarterShare: number[][][];
+  /**
+   * [f][weekday 0..6][c][96] share of the category's average daily demand in each quarter-hour of that CALENDAR day.
+   * Includes the after-midnight part of the previous day's activity; a day's shares need not sum to 1.
+   */
+  quarterShare: number[][][][];
+  /** [f][weekday 0..6] sum of the day's shares (≈1 on a normal day, small for "only after-midnight" days) */
+  dayWeight: number[][];
   /** [f][c] share of daily demand per category */
   mixShare: number[][];
   /** [f][p] relative product preference within its category */
@@ -29,9 +34,13 @@ export interface SimModel {
 const C = CATEGORIES.length;
 
 function categoryTimeFactor(cat: CategoryId, t: number): number {
+  const night = t >= 22 || t < 5;
   switch (cat) {
     case "breakfast":
-      return t < 10.5 ? 2.6 : t < 12 ? 1 : 0.25;
+      return t >= 5 && t < 10.5 ? 2.6 : t >= 5 && t < 12 ? 1 : 0.25;
+    case "snack":
+    case "drink":
+      return night ? 1.4 : 1;
     case "hot":
       return t >= 11 && t < 15 ? 1.5 : t >= 17.5 ? 1.1 : 0.6;
     case "salad":
@@ -100,22 +109,34 @@ export function buildModel(seed: number, anchorDay: number): SimModel {
     activeSinceDay: a.ageDays ? anchorDay - a.ageDays : anchorDay - 400,
   }));
 
-  const quarterShare = ARCHETYPES.map((a) =>
-    catIds.map((cid) => {
-      const arr = new Array<number>(96).fill(0);
-      let sum = 0;
-      for (let q = 0; q < 96; q++) {
-        const minute = q * 15;
-        if (minute < a.open || minute + 15 > a.close) continue;
-        const t = (minute + 7.5) / 60;
-        let curve = 0.06;
-        for (const p of a.peaks) curve += p.w * Math.exp(-((t - p.mu) ** 2) / (2 * p.sigma * p.sigma));
-        arr[q] = curve * categoryTimeFactor(cid, t);
-        sum += arr[q];
-      }
-      return sum > 0 ? arr.map((v) => v / sum) : arr;
-    }),
-  );
+  // weekly intensity: own hours of each weekday + the after-midnight tail of the previous weekday
+  const quarterShare = ARCHETYPES.map((a) => {
+    const hours = a.hours ?? Object.fromEntries(a.workingDays.map((d) => [d, [[a.open, a.close]]]));
+    const activeQ = (wd: number, q: number) => {
+      const m = q * 15;
+      const own = (hours[(wd + 1) as Weekday] ?? []).some(([from, to]) => m >= from && m + 15 <= Math.min(to, 1440));
+      const prev = (hours[(((wd + 6) % 7) + 1) as Weekday] ?? []).some(([, to]) => to > 1440 && m + 15 <= to - 1440);
+      return own || prev;
+    };
+    const ownDays = [0, 1, 2, 3, 4, 5, 6].filter((wd) => (hours[(wd + 1) as Weekday] ?? []).length > 0).length || 1;
+    return catIds.map((cid) => {
+      const week = [0, 1, 2, 3, 4, 5, 6].map((wd) =>
+        Array.from({ length: 96 }, (_, q) => {
+          if (!activeQ(wd, q)) return 0;
+          const t = (q * 15 + 7.5) / 60;
+          let curve = 0.06;
+          for (const p of a.peaks) {
+            const d = Math.min(Math.abs(t - p.mu), 24 - Math.abs(t - p.mu)); // circular: 23:00 and 01:00 are close
+            curve += p.w * Math.exp(-(d ** 2) / (2 * p.sigma * p.sigma));
+          }
+          return curve * categoryTimeFactor(cid, t);
+        }),
+      );
+      const perDay = week.reduce((acc, day) => acc + day.reduce((x, y) => x + y, 0), 0) / ownDays;
+      return week.map((day) => (perDay > 0 ? day.map((v) => v / perDay) : day));
+    });
+  }).map((byCat) => [0, 1, 2, 3, 4, 5, 6].map((wd) => byCat.map((week) => week[wd])));
+  const dayWeight = quarterShare.map((byWd) => byWd.map((byCat) => byCat[0].reduce((x, y) => x + y, 0)));
 
   const mixShare = ARCHETYPES.map((a) => {
     const raw = catIds.map((cid) => NETWORK_MIX[cid] * (a.mix[cid] ?? 1));
@@ -137,6 +158,7 @@ export function buildModel(seed: number, anchorDay: number): SimModel {
     fridges,
     products,
     quarterShare,
+    dayWeight,
     mixShare,
     productWeight,
     catProducts,
@@ -145,11 +167,17 @@ export function buildModel(seed: number, anchorDay: number): SimModel {
   };
 }
 
+/** Does the fridge (really, in the simulation) sell on that calendar day? Night tails count. */
 export function isOpenDay(model: SimModel, f: number, day: number): boolean {
   const fr = model.fridges[f];
   if (day < fr.activeSinceDay) return false;
   if (fr.closedOnHolidays && model.holidays.has(day)) return false;
-  return fr.workingDays.includes(weekdayOf(day));
+  return model.dayWeight[f][weekdayOf(day) - 1] > 0;
+}
+
+/** Quarter shares of a calendar day (index by quarter 0..95). */
+export function dayShares(model: SimModel, f: number, c: number, day: number): number[] {
+  return model.quarterShare[f][weekdayOf(day) - 1][c];
 }
 
 /** Expected (noise-free) daily demand of a category. */
@@ -186,7 +214,7 @@ export function generateDay(model: SimModel, f: number, day: number, outHourly: 
   const dayNoise = lognormal(rng, 0.13);
   for (let c = 0; c < C; c++) {
     const daily = expectedDaily(model, f, c, day) * dayNoise * lognormal(rng, 0.08);
-    const shares = model.quarterShare[f][c];
+    const shares = dayShares(model, f, c, day);
     let catTotal = 0;
     for (let hr = 0; hr < 24; hr++) {
       const lambda = daily * (shares[hr * 4] + shares[hr * 4 + 1] + shares[hr * 4 + 2] + shares[hr * 4 + 3]);

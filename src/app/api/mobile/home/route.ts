@@ -9,7 +9,7 @@ export const GET = handle(async (req: Request) => {
   const user = await currentUser();
   const rt = await getRuntime();
   await rt.ensureFreshAnalysis();
-  const mode = modeFrom(req);
-  const { snap, result } = await rt.analysis(mode);
+  const { snap, result } = await rt.analysis(modeFrom(req));
+  const mode = rt.effectiveMode(modeFrom(req), snap);
   return mobileHome(snap, result, rt.state, user, rt.mode, mode);
 });

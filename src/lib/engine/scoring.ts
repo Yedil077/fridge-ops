@@ -15,22 +15,19 @@ export interface DailyScore {
 }
 
 export function dailyScore(snap: NetworkSnapshot, forecasts: FridgeForecast[], missions: Mission[]): DailyScore {
-  const { fridges, categories, today } = snap;
+  const { categories, today } = snap;
   const C = categories.length;
   const qNow = Math.floor((snap.now / 60000 - today.day * 1440) / 15);
 
-  // availability: share of open quarter-hours with the category in stock (core categories with demand)
+  // availability: share of quarter-hours WITH EXPECTED DEMAND (any time of day, learned) where the category was in stock
   let slots = 0;
   let empty = 0;
   forecasts.forEach((ff, f) => {
-    if (!ff.isWorkingToday) return;
-    const fr = fridges[f];
-    const q0 = Math.ceil(fr.openingMinute / 15);
-    const q1 = Math.min(qNow, Math.floor(fr.closingMinute / 15));
     ff.categories.forEach((cf, c) => {
       if (!categories[c].core) return;
       if (cf.normalHourly.reduce((a, b) => a + b, 0) < 1) return;
-      for (let q = q0; q < q1; q++) {
+      for (let q = 0; q < qNow; q++) {
+        if (cf.normalHourly[Math.floor(q / 4)] < 0.2) continue; // nobody buys at this hour here
         slots++;
         if (today.stockoutQuarters[(f * C + c) * QUARTERS + q]) empty++;
       }

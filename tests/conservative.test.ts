@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Simulator } from "../src/lib/simulator/simulator";
 import { analyze } from "../src/lib/engine/analysis";
-import { horizonEnd } from "../src/lib/engine/recommend";
+import { horizonWindow } from "../src/lib/engine/recommend";
 import { ENGINE_CONFIG } from "../src/lib/config/engine";
 import { dayNumber } from "../src/lib/time";
 
@@ -61,11 +61,10 @@ test("conservative quantities: per-dish and per-route caps, variety kept at the 
 });
 
 test("forecast mode really changes the horizon and the recommendations", () => {
-  // 10:00, fridge 08:00–21:00 → REAL TIME ends 11:30, second mode ends at the fridge's closing time 21:00
-  assert.equal(horizonEnd("realtime", 480, 1260, 600), 690);
-  assert.equal(horizonEnd("until20", 480, 1260, 600), 1260);
-  // closing time comes from settings: a fridge closing at 19:00 is forecast until 19:00
-  assert.equal(horizonEnd("until20", 480, 1140, 600), 1140);
+  // 10:00 → REAL TIME ends 11:30; "ДО 20:00" ends at the clock time from Настройки
+  assert.deepEqual(horizonWindow("realtime", 600), { end: 690, passed: false });
+  assert.deepEqual(horizonWindow("until20", 600, { untilMinute: 1200 }), { end: 1200, passed: false });
+  assert.deepEqual(horizonWindow("h2", 600), { end: 720, passed: false });
   const snap = daySnapshots()[0];
   const rt = analyze(snap, learning(), [], "realtime").drafts;
   const u20 = analyze(snap, learning(), [], "until20").drafts;

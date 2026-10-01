@@ -52,6 +52,18 @@ export function wallClockNow(timeZone: string): number {
   return Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"), get("second"));
 }
 
+/** Is `minute` (0–1439) inside [from, to)? Handles windows across midnight, e.g. 18:00–02:00 (from > to). */
+export function inCircularRange(minute: number, from: number, to: number): boolean {
+  const m = ((minute % 1440) + 1440) % 1440;
+  if (from === to) return true; // 24 h
+  return from < to ? m >= from && m < to : m >= from || m < to;
+}
+
+/** Length of [from, to) in minutes; `to` before `from` means the window continues after midnight. */
+export function circularLength(from: number, to: number): number {
+  return to > from ? to - from : 1440 - from + to;
+}
+
 export function fmtHM(minute: number): string {
   const m = ((Math.round(minute) % 1440) + 1440) % 1440;
   return `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;

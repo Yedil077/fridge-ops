@@ -34,7 +34,7 @@ export default function MobileHomePage() {
       </section>
 
       <Link href="/m/scan" className="mt-3 flex h-14 items-center justify-center gap-2 rounded-2xl border border-line-strong bg-surface-2 text-[16px] font-bold active:bg-surface-3">
-        📷 СКАНИРОВАТЬ · загрузка / разгрузка
+        📷 СКАНИРОВАТЬ · загрузка / снятие / списание
       </Link>
 
       {alert && (

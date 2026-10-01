@@ -13,7 +13,7 @@ import type {
 } from "../domain/types";
 import { fmtDuration, fmtHM, weekdayOf, weekdayPlural } from "../time";
 import { distanceFactor } from "./distance";
-import { sumWindow } from "./forecast";
+import { rateAt, sumAcross } from "./forecast";
 import { sameWeekdayWindowSales, type EngineContext } from "./history";
 import { productModel, type ProductModel } from "./products";
 import { wasteUnits } from "./risk";
@@ -42,19 +42,46 @@ export interface PairStat {
 
 export interface RecommendOptions {
   mode: ForecastMode;
+  /** clock time of the "ДО HH:MM" mode, minutes (default 20:00) */
+  untilMinute?: number;
   /** learned acceptance per source fridge id (moved / recommended) */
   acceptance?: Record<string, { ratio: number; n: number }>;
 }
 
-/** End of the forecast window for a fridge in the chosen mode (minutes of the day). */
-export function horizonEnd(mode: ForecastMode, openingMinute: number, closingMinute: number, nowMinute: number): number {
+export const DEFAULT_UNTIL_MINUTE = 20 * 60;
+
+/**
+ * Forecast window for the chosen mode: always [now, end), any time of day; end may exceed 1440 (after midnight).
+ * No business-hours assumption. "ДО HH:MM" after that time → passed=true and the REAL TIME window is used.
+ */
+export function horizonWindow(
+  mode: ForecastMode,
+  nowMinute: number,
+  opts: { untilMinute?: number; activityEndMinute?: number } = {},
+): { end: number; passed: boolean } {
   const T = ENGINE_CONFIG.transfer;
-  const from = Math.max(nowMinute, openingMinute);
-  const realtime = Math.min(closingMinute, from + T.realtimeHorizonMinutes);
-  if (mode === "realtime") return realtime;
-  // second mode: until the fridge's closing time (set per fridge in Настройки)
-  return closingMinute > from ? closingMinute : realtime;
+  const realtime = nowMinute + T.realtimeHorizonMinutes;
+  switch (mode) {
+    case "h1":
+      return { end: nowMinute + 60, passed: false };
+    case "h2":
+      return { end: nowMinute + 120, passed: false };
+    case "until20": {
+      const until = opts.untilMinute ?? DEFAULT_UNTIL_MINUTE;
+      return until > nowMinute ? { end: until, passed: false } : { end: realtime, passed: true };
+    }
+    case "activity": {
+      const max = nowMinute + ENGINE_CONFIG.activity.maxActivityHorizonMinutes;
+      const end = opts.activityEndMinute ?? realtime;
+      return { end: Math.min(max, Math.max(nowMinute + 30, end)), passed: false };
+    }
+    default:
+      return { end: realtime, passed: false };
+  }
 }
+
+/** Short horizons look only a little ahead: sources then also keep part of their later demand. */
+const isShortMode = (mode: ForecastMode) => mode === "realtime" || mode === "h1" || mode === "h2";
 
 export type MissionDraft = Pick<
   Mission,
@@ -122,7 +149,13 @@ function priorityLabel(p: number): Mission["priorityLabel"] {
 const r1 = (v: number) => (Math.round(v * 10) / 10).toString().replace(".", ",");
 const rng = (a: [number, number]) => (a[0] === a[1] ? `${a[0]}` : `${a[0]}–${a[1]}`);
 
-export function buildSlots(ctx: EngineContext, forecasts: FridgeForecast[], reservations: Reservation[], mode: ForecastMode = "realtime"): Slot[][] {
+export function buildSlots(
+  ctx: EngineContext,
+  forecasts: FridgeForecast[],
+  reservations: Reservation[],
+  mode: ForecastMode = "realtime",
+  untilMinute?: number,
+): Slot[][] {
   const T = ENGINE_CONFIG.transfer;
   const K = ENGINE_CONFIG.conservative;
   const inbound = forecasts.map(() => new Array<number>(ctx.C).fill(0));
@@ -133,13 +166,12 @@ export function buildSlots(ctx: EngineContext, forecasts: FridgeForecast[], rese
   }
   return forecasts.map((ff, f) =>
     ff.categories.map((cf, c) => {
-      const fr = ctx.snap.fridges[f];
+      // ACTIVE = observed activity now (history of this weekday/hour or sales in the last hour), not a schedule
       const targetEligible = ff.isOpenNow && ff.minutesToClose >= T.minTargetOpenMinutes;
       const sourceEligible = ff.isOpenNow || (T.allowClosedSource && ff.isWorkingToday);
-      const nowFrom = Math.max(ctx.nowMinute, fr.openingMinute);
-      // forecast window depends on the mode: REAL TIME = until the next check, ДО 20:00 = until 20:00
-      const end = horizonEnd(mode, fr.openingMinute, fr.closingMinute, ctx.nowMinute);
-      const cover = sumWindow(cf.forecastHourly, nowFrom, end);
+      // window: [now, end) for the chosen mode — crosses midnight when needed
+      const { end } = horizonWindow(mode, ctx.nowMinute, { untilMinute, activityEndMinute: ff.activityEndMinute });
+      const cover = sumAcross(cf.forecastHourly, cf.tomorrowHourly, ctx.nowMinute, end);
       const stockIn = cf.stock + inbound[f][c];
       // no demand in the window → nothing to bring (safety stock alone must not trigger moves)
       const demandOk = cover >= K.minDemandInWindow;
@@ -151,8 +183,8 @@ export function buildSlots(ctx: EngineContext, forecasts: FridgeForecast[], rese
       const keep = Math.max(
         upperCover + cf.safetyStock,
         minDisplay,
-        // REAL TIME looks only ~90 min ahead: also keep half of the rest-of-day demand
-        mode === "realtime" ? 0.5 * cf.expectedUntilClose : 0,
+        // short horizons look only 1–2 h ahead: also keep half of the demand until the end of activity
+        isShortMode(mode) ? 0.5 * cf.expectedUntilClose : 0,
       );
       const surplus = sourceEligible ? Math.max(0, Math.floor(cf.stock - outbound[f][c] - keep)) : 0;
       const waste = sourceEligible ? Math.max(0, cf.wasteUnits - outbound[f][c] * ctx.snap.categories[c].wasteShare[ff.isWorkingTomorrow ? 0 : 1]) : 0;
@@ -326,9 +358,9 @@ function explainLine(
   const ts = slots[t][c];
   const srcF = ctx.snap.fridges[s];
   const tgtF = ctx.snap.fridges[t];
-  const nowFrom = Math.max(ctx.nowMinute, tgtF.openingMinute);
-  const windowEnd = Math.min(tgtF.closingMinute, nowFrom + ENGINE_CONFIG.riskHorizonMinutes);
-  const normalWindow = sumWindow(tgt.normalHourly, nowFrom, windowEnd);
+  const nowFrom = ctx.nowMinute;
+  const windowEnd = nowFrom + ENGINE_CONFIG.riskHorizonMinutes;
+  const normalWindow = sumAcross(tgt.normalHourly, tgt.tomorrowHourly, nowFrom, windowEnd);
   const lastSame = sameWeekdayWindowSales(ctx, t, c, nowFrom, windowEnd, 4);
   const pacePct = Math.round((tgt.pace - 1) * 100);
   const pf = pairFactor(pairStats, pairKey(srcF.id, tgtF.id, cat.id));
@@ -360,17 +392,17 @@ function explainLine(
   target.push({ label: "Прогноз на 2 ч", value: `${rng(tgt.interval2h)} шт.` });
   if (tgt.minutesToEmpty !== null) target.push({ label: "Закончится через", value: `~${fmtDuration(tgt.minutesToEmpty)}`, emphasis: true });
   if (ts.deficit > 0) target.push({ label: "Ожидаемый дефицит", value: `${ts.deficit} шт.`, emphasis: true });
-  else target.push({ label: "Может продать до закрытия", value: `ещё ~${Math.max(0, Math.round(tgt.expectedUntilClose - tgt.stock))} шт.` });
+  else target.push({ label: `Может продать до ${fmtHM(forecasts[t].activityEndMinute)} (конец активности)`, value: `ещё ~${Math.max(0, Math.round(tgt.expectedUntilClose - tgt.stock))} шт.` });
 
   const source: ExplanationLine[] = [
     { label: "Сейчас в наличии", value: `${src.stock} шт.` },
-    { label: `Прогноз до закрытия (${fmtHM(srcF.closingMinute)})`, value: `${rng(src.intervalClose)} шт.` },
+    { label: `Прогноз до конца активности (${fmtHM(forecasts[s].activityEndMinute)})`, value: `${rng(src.intervalClose)} шт.` },
     { label: "Оставляем себе (запас)", value: `${Math.ceil(ss.keep)} шт.` },
     { label: "Безопасный излишек", value: `${ss.surplus} шт.`, emphasis: true },
   ];
   if (src.wasteUnits >= 1)
     source.push({
-      label: forecasts[s].isWorkingTomorrow ? "Риск списания к закрытию" : "Риск списания (завтра выходной)",
+      label: forecasts[s].isWorkingTomorrow ? "Риск списания к концу активности" : "Риск списания (завтра продаж обычно нет)",
       value: `~${Math.round(src.wasteUnits)} шт.`,
       emphasis: true,
     });
@@ -391,11 +423,11 @@ function explainLine(
   if (ts.deficit > 0) {
     short.push(`${tgtF.name} обычно продаёт ~${Math.round(normalWindow)} (${cat.name.toLowerCase()}) с ${fmtHM(nowFrom)} до ${fmtHM(windowEnd)}. Сейчас осталось ${tgt.stock}.`);
   } else {
-    short.push(`${srcF.name}: ${ss.surplus} лишних (${cat.name.toLowerCase()}) — до закрытия там не продадутся.`);
+    short.push(`${srcF.name}: ${ss.surplus} лишних (${cat.name.toLowerCase()}) — до конца активности (${fmtHM(forecasts[s].activityEndMinute)}) там не продадутся.`);
   }
   if (Math.abs(pacePct) >= 8) short.push(`Сегодня продажи ${pacePct > 0 ? "на " + pacePct + "% выше" : "на " + -pacePct + "% ниже"} обычного.`);
   if (ts.deficit > 0) short.push(`${srcF.name} имеет ${ss.surplus} лишних порций${src.wasteUnits >= 1 ? `, иначе ~${Math.round(src.wasteUnits)} уйдут в списание` : ""}.`);
-  else short.push(`${tgtF.name} успеет их продать до закрытия.`);
+  else short.push(`${tgtF.name} успеет их продать до ${fmtHM(forecasts[t].activityEndMinute)}.`);
   const lead = products[0];
   if (lead && lead.targetPerDay > lead.sourcePerDay * 1.2)
     short.push(`«${lead.name}» в ${tgtF.name} продаётся ${r1(lead.targetPerDay)}/день, в ${srcF.name} — ${r1(lead.sourcePerDay)}.`);
@@ -403,7 +435,7 @@ function explainLine(
   const summary =
     ts.deficit > 0
       ? `${tgtF.name}: ${tgt.stock} шт., а за ${fmtDuration(windowEnd - nowFrom)} ожидается ${rng(tgt.interval2h)}. ${srcF.name} имеет безопасный излишек ${ss.surplus}.`
-      : `${srcF.name}: излишек ${cat.name.toLowerCase()} ~${ss.surplus} шт.${src.wasteUnits >= 1 ? `, риск списания ~${Math.round(src.wasteUnits)}` : ""}. ${tgtF.name} продаст их до закрытия.`;
+      : `${srcF.name}: излишек ${cat.name.toLowerCase()} ~${ss.surplus} шт.${src.wasteUnits >= 1 ? `, риск списания ~${Math.round(src.wasteUnits)}` : ""}. ${tgtF.name} продаст их до ${fmtHM(forecasts[t].activityEndMinute)}.`;
 
   return {
     categoryId: cat.id,
@@ -472,14 +504,14 @@ function effectOf(
   const lead = lines.reduce((a, b) => (b.qty > a.qty ? b : a));
   const cf = forecasts[t].categories[lead.c];
   const fr = ctx.snap.fridges[t];
+  const until = Math.max(forecasts[t].activityEndMinute, ctx.nowMinute + ENGINE_CONFIG.riskHorizonMinutes);
   const lasts = (stock: number) => {
-    const from = Math.max(ctx.nowMinute, fr.openingMinute);
     let cum = 0;
-    for (let m = from; m < fr.closingMinute; m += 5) {
-      cum += cf.forecastHourly[Math.floor(m / 60)] / 12;
+    for (let m = ctx.nowMinute; m < until; m += 5) {
+      cum += rateAt(cf.forecastHourly, cf.tomorrowHourly, m) / 12;
       if (cum >= stock) return fmtDuration(m + 5 - ctx.nowMinute);
     }
-    return "до закрытия";
+    return `до ${fmtHM(until)}`;
   };
   const before = cf.stock <= 0 ? "пусто" : lasts(cf.stock);
   const after = lasts(cf.stock + lead.qty);
@@ -518,7 +550,7 @@ export function recommend(
 ): MissionDraft[] {
   const T = ENGINE_CONFIG.transfer;
   const pm = productModel(ctx);
-  const slots = buildSlots(ctx, forecasts, reservations, opts.mode);
+  const slots = buildSlots(ctx, forecasts, reservations, opts.mode, opts.untilMinute);
   const ledger: ProductLedger = { taken: new Float64Array(ctx.F * ctx.P), sent: new Float64Array(ctx.F * ctx.P) };
   for (const r of reservations)
     for (const p of r.products ?? []) {
@@ -592,7 +624,7 @@ export function recommend(
   }
 
   // explanations describe the state before this analysis' picks
-  const baseSlots = buildSlots(ctx, forecasts, reservations, opts.mode);
+  const baseSlots = buildSlots(ctx, forecasts, reservations, opts.mode, opts.untilMinute);
   const drafts: MissionDraft[] = [];
   for (const [s, targets] of stopsBySource) {
     const cands = chosen.filter((x) => x.s === s);

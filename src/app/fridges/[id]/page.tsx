@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { ActivityPanel } from "@/components/ActivityPanel";
 import { use } from "react";
 import clsx from "clsx";
 import { Shell } from "@/components/Shell";
@@ -13,7 +14,7 @@ import { CATEGORY_COLORS } from "@/lib/domain/categories";
 const WD = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
 
 function fmtMin(m: number | null) {
-  if (m === null) return "хватит до закрытия";
+  if (m === null) return "хватит до конца активности";
   if (m === 0) return "пусто";
   return m < 60 ? `${m} мин` : `${Math.floor(m / 60)} ч ${m % 60 ? `${m % 60} мин` : ""}`;
 }
@@ -37,7 +38,7 @@ export default function FridgePage({ params }: { params: Promise<{ id: string }>
         <div>
           <div className="text-[28px] font-semibold tracking-tight">{data.fridge.name}</div>
           <div className="text-[13px] text-ink-3">
-            {data.fridge.location} · {data.fridge.workingDays.map((d) => WD[d - 1]).join(" ")} · {data.fridge.opening}–{data.fridge.closing}
+            {data.fridge.location} · {data.activeUntil ? `активна до ~${data.activeUntil}` : "сейчас продаж обычно нет"} · по настройкам: {data.fridge.workingDays.map((d) => WD[d - 1]).join(" ")} {data.fridge.opening}–{data.fridge.closing}
           </div>
         </div>
         <div className={clsx("flex items-center gap-2 text-[13px] font-medium", st.text)}>
@@ -50,6 +51,10 @@ export default function FridgePage({ params }: { params: Promise<{ id: string }>
           </div>
         </div>
       </header>
+
+      <div className="mt-4">
+        <ActivityPanel a={data.activity} />
+      </div>
 
       <div className="mt-4 flex flex-wrap gap-2">
         {p.traits.map((t) => (
@@ -77,7 +82,7 @@ export default function FridgePage({ params }: { params: Promise<{ id: string }>
         <table className="w-full min-w-[860px] text-[13px]">
           <thead>
             <tr className="border-b border-line text-left">
-              {["Категория", "Остаток", "Статус", "Скорость", "Прогноз 2 ч", "До закрытия", "Закончится", "Уверенность", "Основа прогноза"].map((h) => (
+              {["Категория", "Остаток", "Статус", "Скорость", "Прогноз 2 ч", "До конца активности", "Закончится", "Уверенность", "Основа прогноза"].map((h) => (
                 <th key={h} className="label px-4 py-3 font-semibold">{h}</th>
               ))}
             </tr>

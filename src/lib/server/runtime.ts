@@ -1,6 +1,7 @@
 import "server-only";
 import { ENGINE_CONFIG } from "../config/engine";
-import type { ForecastMode, Mission, NetworkSnapshot } from "../domain/types";
+import { FORECAST_MODE_IDS, type ForecastMode, type Mission, type NetworkSnapshot } from "../domain/types";
+import { DEFAULT_UNTIL_MINUTE, horizonWindow } from "../engine/recommend";
 import { analyze, type AnalysisResult } from "../engine/analysis";
 import { buildTravelMatrix } from "../engine/distance";
 import { applyLearning, evaluateMission, isDue } from "../engine/feedback";
@@ -36,7 +37,7 @@ export interface CompleteItem {
   unavailable?: boolean;
 }
 
-export const FORECAST_MODES: ForecastMode[] = ["realtime", "until20"];
+export const FORECAST_MODES: ForecastMode[] = FORECAST_MODE_IDS;
 
 export type MissionAction =
   | { action: "accept" }
@@ -233,31 +234,46 @@ class Runtime {
     return this.state.missions.filter((m) => m.status === "ACCEPTED" || m.status === "IN_PROGRESS");
   }
 
-  /** The selected forecast horizon really changes the engine (REAL TIME vs ДО 20:00). */
+  /** The selected forecast horizon really changes the engine (REAL TIME, +1 Ч, +2 Ч, ДО HH:MM, ДО КОНЦА АКТИВНОСТИ). */
   private analysisFor(snap: NetworkSnapshot, mode: ForecastMode = "realtime"): AnalysisResult {
     const active = this.activeMissions();
-    const key = `${snap.version}|${JSON.stringify(this.state.learning).length}|${active.map((m) => m.id + m.status).join(",")}`;
+    const until = this.untilMinute();
+    const key = `${snap.version}|${until}|${JSON.stringify(this.state.learning).length}|${active.map((m) => m.id + m.status).join(",")}`;
     const hit = this.cache.get(mode);
     if (hit?.key === key) return hit.result;
-    const result = analyze(snap, this.state.learning, active, mode);
+    const result = analyze(snap, this.state.learning, active, mode, until);
     this.cache.set(mode, { key, result });
     return result;
   }
 
   async analysis(mode: ForecastMode = "realtime"): Promise<{ snap: NetworkSnapshot; result: AnalysisResult }> {
     const snap = await this.snapshot();
-    return { snap, result: this.analysisFor(snap, mode) };
+    return { snap, result: this.analysisFor(snap, this.effectiveMode(mode, snap)) };
   }
 
-  /** Most common closing time of fridges working today (from Настройки) — label of the second mode. */
-  closeTime(snap: NetworkSnapshot): string {
-    const counts = new Map<number, number>();
-    for (const f of snap.fridges) {
-      if (!f.isActive || !f.workingDays.includes(weekdayOf(dayNumber(snap.now)))) continue;
-      counts.set(f.closingMinute, (counts.get(f.closingMinute) ?? 0) + 1);
-    }
-    const best = [...counts.entries()].sort((a, b) => b[1] - a[1] || b[0] - a[0])[0]?.[0] ?? 20 * 60;
-    return fmtHM(best);
+  /** Clock time of the user mode "ДО HH:MM" (Настройки, default 20:00). Not an assumption about closing hours. */
+  untilMinute(): number {
+    return this.state.untilMinute ?? DEFAULT_UNTIL_MINUTE;
+  }
+
+  untilTime(): string {
+    return fmtHM(this.untilMinute());
+  }
+
+  setUntilMinute(minute: number) {
+    this.state.untilMinute = Math.max(0, Math.min(1439, Math.round(minute)));
+    this.cache.clear();
+    this.save();
+  }
+
+  /** "ДО HH:MM" after that time falls back to REAL TIME (the UI says the horizon has passed). */
+  effectiveMode(mode: ForecastMode, snap: NetworkSnapshot): ForecastMode {
+    return mode === "until20" && this.untilPassed(snap) ? "realtime" : mode;
+  }
+
+  /** Has the "ДО HH:MM" horizon already passed for the current time? */
+  untilPassed(snap: NetworkSnapshot): boolean {
+    return horizonWindow("until20", minuteOfDay(snap.now), { untilMinute: this.untilMinute() }).passed;
   }
 
   /** Current display names (Admin can rename fridges at any time). */
@@ -283,7 +299,9 @@ class Runtime {
   /** Replaces untouched NEW missions with the fresh top list — one list per forecast mode. */
   private createMissions(snap: NetworkSnapshot): Mission[] {
     for (const m of this.state.missions) if (m.status === "NEW") m.status = "EXPIRED";
-    const drafts = FORECAST_MODES.flatMap((mode) => this.analysisFor(snap, mode).drafts);
+    // "ДО HH:MM" after that time has no horizon of its own → no separate mission list
+    const modes = FORECAST_MODES.filter((m) => m !== "until20" || !this.untilPassed(snap));
+    const drafts = modes.flatMap((mode) => this.analysisFor(snap, mode).drafts);
     const created: Mission[] = drafts.map((d) => {
       this.state.missionSeq += 1;
       return {
@@ -831,17 +849,16 @@ class Runtime {
         text = sim.createAnomaly();
         break;
       case "to-close": {
-        // jump to the end of the working day: the latest closing time among today's fridges
+        // jump to the clock time of the "ДО HH:MM" mode (Настройки) — fridges themselves may keep selling later
         const snap = this.simSnapshot();
-        const today = weekdayOf(dayNumber(snap.now));
-        const close = Math.max(0, ...snap.fridges.filter((f) => f.workingDays.includes(today)).map((f) => f.closingMinute));
-        const left = close - minuteOfDay(snap.now);
-        if (left <= 0) return `Уже после закрытия (${fmtHM(close)})`;
+        const until = this.untilMinute();
+        const left = until - minuteOfDay(snap.now);
+        if (left <= 0) return `Уже позже ${fmtHM(until)}`;
         this.advance(Math.ceil(left / 15) * 15);
-        return `Прокручено до закрытия · ${fmtHM(close)}`;
+        return `Прокручено до ${fmtHM(until)}`;
       }
       case "now": {
-        // back to the real current time (after "+1 час" / "до закрытия")
+        // back to the real current time (after "+1 час" / "до HH:MM")
         const target = wallClockNow(TZ);
         const start = minuteOfDay(target) - (minuteOfDay(target) % 15);
         if (dayNumber(target) !== sim.state.day || sim.now > target) {

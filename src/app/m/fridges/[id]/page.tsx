@@ -48,7 +48,7 @@ export default function MobileFridgePage({ params }: { params: Promise<{ id: str
           {(
             [
               ["LOAD", "Загрузить"],
-              ["UNLOAD", "Разгрузить"],
+              ["UNLOAD", "Снять"],
               ["WRITE_OFF", "Списать"],
             ] as const
           ).map(([t, label]) => (

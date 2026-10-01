@@ -143,6 +143,8 @@ export interface AppState {
   audit: AuditEntry[];
   /** confirmed Fridge Ops product → KiT Shop product links (our product id → mapping) */
   productMappings: Record<string, ConfirmedMapping>;
+  /** clock time of the user forecast mode "ДО HH:MM" (minutes, default 20:00) — NOT a closing time of the network */
+  untilMinute?: number;
   /** PAUSE ALL WRITES flag, Phase D test shop / product and the REAL WRITE TEST run */
   kitshopAdmin: KitShopAdminState;
 }

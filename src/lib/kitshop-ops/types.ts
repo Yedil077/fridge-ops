@@ -140,7 +140,17 @@ export interface KitShopWriteAdapter {
 
 export const OPEN_STATUSES: OpStatus[] = ["DRAFT", "PENDING", "UNKNOWN", "REQUIRES_REVIEW", "WAITING_FOR_CONNECTION"];
 
-export const OP_TYPE_LABEL: Record<OpType, string> = { LOAD: "Загрузка", UNLOAD: "Разгрузка", WRITE_OFF: "Списание" };
+/**
+ * ONE vocabulary everywhere (mobile, web, admin, audit, diagnostics). Internal enums stay as they are.
+ *  ЗАГРУЗКА = товар добавили в холодильник
+ *  СНЯТИЕ   = товар физически забрали из холодильника для перемещения в другую точку
+ *  СПИСАНИЕ = товар убрали из оборота, не для перемещения
+ * (In KiT Shop both СНЯТИЕ and СПИСАНИЕ are a MakeFillUp with a negative quantity; СПИСАНИЕ carries a reason.)
+ */
+export const OP_TYPE_LABEL: Record<OpType, string> = { LOAD: "Загрузка", UNLOAD: "Снятие", WRITE_OFF: "Списание" };
+export const OP_TYPE_UPPER: Record<OpType, string> = { LOAD: "ЗАГРУЗКА", UNLOAD: "СНЯТИЕ", WRITE_OFF: "СПИСАНИЕ" };
+/** accusative, for buttons: "ПОДТВЕРДИТЬ ЗАГРУЗКУ / СНЯТИЕ / СПИСАНИЕ" */
+export const OP_TYPE_ACC: Record<OpType, string> = { LOAD: "ЗАГРУЗКУ", UNLOAD: "СНЯТИЕ", WRITE_OFF: "СПИСАНИЕ" };
 
 export const OP_STATUS_LABEL: Record<OpStatus, string> = {
   DRAFT: "Черновик",

@@ -9,5 +9,5 @@ export const GET = handle(async (req: Request) => {
   const user = await currentUser();
   const rt = await getRuntime();
   const snap = await rt.snapshot();
-  return mobileTasks(snap, rt.state, user, modeFrom(req));
+  return mobileTasks(snap, rt.state, user, rt.effectiveMode(modeFrom(req), snap));
 });

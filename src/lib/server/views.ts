@@ -2,12 +2,52 @@ import "server-only";
 import { CATEGORIES } from "../domain/categories";
 import { QUARTERS, type ForecastMode, type FridgeForecast, type Mission, type NetworkSnapshot, type RiskState } from "../domain/types";
 import { personalities, type AnalysisResult } from "../engine/analysis";
-import { histDay, isWorkingDay, type EngineContext } from "../engine/history";
+import { histDay, type EngineContext } from "../engine/history";
+import { activityProfile, fmtHourWindow, fmtRange, type ActivityProfile } from "../engine/activity";
+import type { Fridge } from "../domain/types";
 import { dailyScore, levelInfo } from "../engine/scoring";
 import { dayNumber, fmtDuration, fmtHM, isoDate, minuteOfDay, weekdayOf, weekdayPlural } from "../time";
 import type { AppState } from "../store/appStore";
 
 /** View models: what the UI needs, nothing more. The UI never sees raw engine internals it cannot explain. */
+
+const WD_SHORT = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
+const r1 = (v: number) => Math.round(v * 10) / 10;
+
+/** Configured schedule as text; closing before opening = continues after midnight. */
+export function scheduleText(fr: Fridge): string {
+  const days = fr.workingDays.length === 7 ? "ежедневно" : fr.workingDays.map((d) => WD_SHORT[d - 1]).join(" ");
+  return `${days} ${fmtHM(fr.openingMinute)}–${fmtHM(fr.closingMinute)}${fr.closingMinute < fr.openingMinute ? " (через полночь)" : ""}`;
+}
+
+/** Observed activity of one fridge for the UI (learned from real sale timestamps, all hours, all weekdays). */
+export function activitySummary(p: ActivityProfile, fr: Fridge) {
+  return {
+    configured: scheduleText(fr),
+    ranges: p.ranges.map(fmtRange),
+    learnedWeekdays: p.learned.filter(Boolean).length,
+    nightShare: r1(p.nightShare * 100),
+    weekendShare: r1(p.weekendShare * 100),
+    peaks: p.peaks.map((x) => fmtHourWindow(x.from, x.to)),
+    topHours: p.topHours.map((h) => fmtHourWindow(h, h + 1)),
+    mismatches: p.mismatches.map((m) => ({ weekday: WD_SHORT[m.weekday - 1], hours: hoursText(m.hours) })),
+    /** [weekday][hour] average units per day */
+    heatmap: p.avg.map((row) => row.map(r1)),
+  };
+}
+
+/** [3,4,5,9] → "03:00–06:00, 09:00–10:00" */
+function hoursText(hours: number[]): string {
+  const out: string[] = [];
+  let i = 0;
+  while (i < hours.length) {
+    let j = i;
+    while (j + 1 < hours.length && hours[j + 1] === hours[j] + 1) j++;
+    out.push(fmtHourWindow(hours[i], hours[j] + 1));
+    i = j + 1;
+  }
+  return out.join(", ");
+}
 
 const CAT_GEN: Record<string, string> = {
   breakfast: "завтраки", hot: "горячее", salad: "салаты", snack: "перекусы", dessert: "десерты", drink: "напитки",
@@ -110,8 +150,9 @@ export function dashboardView(snap: NetworkSnapshot, a: AnalysisResult, state: A
         status: ff.status,
         isOpenNow: ff.isOpenNow,
         isWorkingToday: ff.isWorkingToday,
-        opensAt: ff.isWorkingToday ? fmtHM(fr.openingMinute) : null,
-        closesAt: fmtHM(fr.closingMinute),
+        // observed activity (learned), not the configured schedule
+        opensAt: ff.minutesToOpen !== null ? fmtHM(minuteOfDay(snap.now) + ff.minutesToOpen) : null,
+        closesAt: ff.isOpenNow ? fmtHM(ff.activityEndMinute) : null,
         fillPct: Math.min(100, Math.round((ff.totalStock / fr.capacity) * 100)),
         totalStock: ff.totalStock,
         salesToday: ff.salesToday,
@@ -148,6 +189,7 @@ export function fridgeDetailView(snap: NetworkSnapshot, a: AnalysisResult, fridg
   const forecastHourly = new Array<number>(24).fill(0);
   ff.categories.forEach((c) => c.normalHourly.forEach((v, h) => { typicalHourly[h] += v; forecastHourly[h] += c.forecastHourly[h]; }));
   const nowH = Math.floor(minuteOfDay(snap.now) / 60);
+  const activity = activitySummary(activityProfile(a.ctx, f), fr);
 
   return {
     now: snap.now,
@@ -155,6 +197,8 @@ export function fridgeDetailView(snap: NetworkSnapshot, a: AnalysisResult, fridg
       id: fr.id, code: fr.code, name: fr.name, location: fr.location, locationType: fr.locationType,
       workingDays: fr.workingDays, opening: fmtHM(fr.openingMinute), closing: fmtHM(fr.closingMinute), capacity: fr.capacity,
     },
+    activity,
+    activeUntil: ff.isOpenNow ? fmtHM(ff.activityEndMinute) : null,
     status: ff.status,
     isOpenNow: ff.isOpenNow,
     isWorkingTomorrow: ff.isWorkingTomorrow,
@@ -198,7 +242,7 @@ export function fridgeDetailView(snap: NetworkSnapshot, a: AnalysisResult, fridg
       today: h < nowH || (h === nowH && hourlyToday[h] > 0) ? hourlyToday[h] : null,
       typical: Math.round(typicalHourly[h] * 10) / 10,
       forecast: h >= nowH ? Math.round(forecastHourly[h] * 10) / 10 : null,
-    })).filter((x) => x.typical > 0 || (x.today ?? 0) > 0),
+    })), // 00–23, nothing hidden
     missions: withNames(
       state.missions
         .filter((m) => m.sourceFridgeId === fr.id || (m.stops ?? []).some((s) => s.targetFridgeId === fr.id))
@@ -247,7 +291,7 @@ export function analyticsView(snap: NetworkSnapshot, a: AnalysisResult, state: A
       }
     }
     return { hour: h, label: `${String(h).padStart(2, "0")}:00`, today: h * 60 < nowMin ? today : null, typical: Math.round(typical * 10) / 10 };
-  }).filter((x) => x.typical > 0.5);
+  }); // 00–23: night hours are shown, not filtered
   const salesSoFar = hourly.reduce((x, r) => x + (r.today ?? 0), 0);
   const typicalSoFar = Math.round(a.forecasts.reduce((x, f) => x + f.expectedSoFar, 0));
 
@@ -262,6 +306,27 @@ export function analyticsView(snap: NetworkSnapshot, a: AnalysisResult, state: A
     wdDays[wd]++;
   }
   const weekday = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"].map((name, i) => ({ name, avg: wdDays[i] ? Math.round(wdSum[i] / wdDays[i]) : 0 }));
+
+  // TIME: sales by hour 0–23 and weekday × hour (network, average per calendar day, last 90 days), per fridge activity
+  const profiles = snap.fridges.map((_, f) => activityProfile(ctx, f));
+  const salesByHour = Array.from({ length: 24 }, (_, h) => ({
+    hour: h,
+    label: `${String(h).padStart(2, "0")}:00`,
+    avg: r1(profiles.reduce((x, p) => x + p.hourly[h], 0)),
+  }));
+  const weekHour = Array.from({ length: 7 }, (_, w) =>
+    Array.from({ length: 24 }, (_, h) => r1(profiles.reduce((x, p) => x + p.avg[w][h], 0))),
+  );
+  const timeByFridge = snap.fridges.map((fr, f) => ({ id: fr.id, name: fr.name, ...activitySummary(profiles[f], fr) }));
+  const networkUnits = profiles.reduce((x, p) => x + p.totalUnits, 0) || 1;
+  const time = {
+    salesByHour,
+    weekHour,
+    weekdays: WD_SHORT,
+    nightShare: r1((profiles.reduce((x, p) => x + p.nightShare * p.totalUnits, 0) / networkUnits) * 100),
+    weekendShare: r1((profiles.reduce((x, p) => x + p.weekendShare * p.totalUnits, 0) / networkUnits) * 100),
+    fridges: timeByFridge,
+  };
 
   // heatmap: demand index fridge × category
   const heatmap = a.demandIndex.map((row) => ({
@@ -320,6 +385,7 @@ export function analyticsView(snap: NetworkSnapshot, a: AnalysisResult, state: A
     typicalSoFar,
     weekday,
     heatmap,
+    time,
     categories: CATEGORIES.map((c) => ({ id: c.id, name: c.name, emoji: c.emoji })),
     missions: {
       byStatus,
@@ -333,7 +399,7 @@ export function analyticsView(snap: NetworkSnapshot, a: AnalysisResult, state: A
       history: withNames(done.slice(-25).reverse(), names),
     },
     wasteRisk: a.forecasts
-      .filter((f) => f.isWorkingToday)
+      .filter((f) => f.isWorkingToday || f.isOpenNow)
       .map((f) => ({ name: snap.fridges[f.fridgeIndex].shortName, units: Math.round(f.categories.reduce((x, c) => x + c.wasteUnits, 0) * 10) / 10 }))
       .sort((x, y) => y.units - x.units),
   };
@@ -375,7 +441,8 @@ export function historyView(ctx: EngineContext, state: AppState, rangeDays: numb
       for (const f of fridges) for (let c = 0; c < C; c++) v += snap.history.hourly[((f * C + c) * ctx.D + d) * 24 + h];
       if (v > peakVal) { peakVal = v; peak = h; }
     }
-    const openCount = fridges.filter((f) => isWorkingDay(snap.fridges[f], day, ctx.holidays)).length;
+    // fridges that really sold that day (night and weekend sales included)
+    const openCount = fridges.filter((f) => ctx.sample[f * ctx.D + d]).length;
     const missions = state.missions.filter((m) => dayNumber(m.createdAt) === day && (fIdx < 0 || m.sourceFridgeId === fridgeId || m.lines.some((l) => l.targetFridgeId === fridgeId)));
     const wasteRec = state.sim?.waste.find((w) => w.day === day);
     const waste = wasteRec ? fridges.reduce((a, f) => a + wasteRec.units.slice(f * C, f * C + C).reduce((x, y) => x + y, 0), 0) : null;
@@ -401,7 +468,7 @@ export function historyView(ctx: EngineContext, state: AppState, rangeDays: numb
     openDays++;
     for (const f of fridges) for (let c = 0; c < C; c++) for (let h = 0; h < 24; h++) hourlyAvg[h] += snap.history.hourly[((f * C + c) * ctx.D + d) * 24 + h];
   }
-  const hourly = hourlyAvg.map((v, h) => ({ hour: h, label: `${String(h).padStart(2, "0")}:00`, avg: openDays ? Math.round((v / openDays) * 10) / 10 : 0 })).filter((x) => x.avg > 0);
+  const hourly = hourlyAvg.map((v, h) => ({ hour: h, label: `${String(h).padStart(2, "0")}:00`, avg: openDays ? Math.round((v / openDays) * 10) / 10 : 0 })); // 00–23
 
   const wdSum = new Array<number>(7).fill(0);
   const wdN = new Array<number>(7).fill(0);

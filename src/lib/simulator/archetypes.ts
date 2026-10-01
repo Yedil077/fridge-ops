@@ -24,9 +24,15 @@ export interface Archetype {
   transferGroup?: string;
   location: string;
   locationType: LocationType;
+  /** CONFIGURED (formal) schedule shown in Настройки — the engine does not trust it, it learns from sales */
   workingDays: Weekday[];
   open: number; // minutes
   close: number; // minutes
+  /**
+   * REAL simulated activity per weekday: [from, to) minutes; `to` > 1440 continues after midnight.
+   * Missing → derived from workingDays/open/close. Lets the simulator model night, 24/7, weekend-heavy points.
+   */
+  hours?: Partial<Record<Weekday, [number, number][]>>;
   baseDaily: number;
   capacity: number;
   /** Multipliers over network category mix. */
@@ -162,32 +168,67 @@ export const ARCHETYPES: Archetype[] = [
  * have their own group (no cross-building moves) until an admin changes it in Настройки.
  * Positions between buildings are approximate — set real travel times in Настройки.
  */
-const REAL_FRIDGES: Pick<Archetype, "name" | "shortName" | "kitshopId" | "location" | "zone" | "pos" | "baseDaily" | "transferGroup">[] = [
+type RealFridge = Pick<Archetype, "name" | "shortName" | "kitshopId" | "location" | "zone" | "pos" | "baseDaily" | "transferGroup"> &
+  Partial<Pick<Archetype, "hours" | "peaks" | "locationType" | "weekday" | "story">>;
+
+const every = (from: number, to: number): Partial<Record<Weekday, [number, number][]>> =>
+  Object.fromEntries(ALL_DAYS.map((d) => [d, [[from, to]]]));
+const weekdays = (from: number, to: number): Partial<Record<Weekday, [number, number][]>> =>
+  Object.fromEntries(WEEKDAYS.map((d) => [d, [[from, to]]]));
+
+/**
+ * SIMULATED activity patterns (the real ones are learned from KiT Shop sales once connected).
+ * Deliberately varied so the engine must learn them: late-night, 24/7, weekend-heavy, different hours per weekday.
+ * The configured schedule of every fridge stays "Пн–Пт 08:00–20:00" → the app shows SCHEDULE MISMATCH where reality differs.
+ */
+const REAL_FRIDGES: RealFridge[] = [
   { kitshopId: "621287", transferGroup: "SHARIPOVA", name: "1 Шарипова 4 этаж", shortName: "Шарипова 4", location: "Шарипова · 4 этаж", zone: "Шарипова", pos: [-2.2, -0.6], baseDaily: 24 },
-  { kitshopId: "621288", transferGroup: "DOSMUKHAMEDOVA", name: "2 Досмухамедова Запад 3 этаж", shortName: "Досм. Запад 3", location: "Досмухамедова · запад · 3 этаж", zone: "Досмухамедова", pos: [0.6, 0.4], baseDaily: 50 },
-  { kitshopId: "621136", transferGroup: "DOSMUKHAMEDOVA", name: "3 Досмухамедова Восток 3 этаж", shortName: "Досм. Восток 3", location: "Досмухамедова · восток · 3 этаж", zone: "Досмухамедова", pos: [0.65, 0.4], baseDaily: 92 },
+  { kitshopId: "621288", transferGroup: "DOSMUKHAMEDOVA", name: "2 Досмухамедова Запад 3 этаж", shortName: "Досм. Запад 3", location: "Досмухамедова · запад · 3 этаж", zone: "Досмухамедова", pos: [0.6, 0.4], baseDaily: 50,
+    hours: { ...weekdays(h(8), h(20)), 6: [[h(10), h(16)]] }, weekday: { 6: 0.35 }, story: "небольшие продажи в субботу" },
+  { kitshopId: "621136", transferGroup: "DOSMUKHAMEDOVA", name: "3 Досмухамедова Восток 3 этаж", shortName: "Досм. Восток 3", location: "Досмухамедова · восток · 3 этаж", zone: "Досмухамедова", pos: [0.65, 0.4], baseDaily: 92,
+    hours: weekdays(h(7, 30), h(21)) },
   { kitshopId: "622552", transferGroup: "DOSMUKHAMEDOVA", name: "4 Досмухамедова 5 этаж", shortName: "Досм. 5", location: "Досмухамедова · 5 этаж", zone: "Досмухамедова", pos: [0.62, 0.42], baseDaily: 68 },
-  { kitshopId: "621583", transferGroup: "SATTI", name: "5 БЦ Сатти 1 этаж", shortName: "Сатти 1", location: "БЦ Сатти · 1 этаж", zone: "БЦ Сатти", pos: [1.8, -1.2], baseDaily: 97 },
+  { kitshopId: "621583", transferGroup: "SATTI", name: "5 БЦ Сатти 1 этаж", shortName: "Сатти 1", location: "БЦ Сатти · 1 этаж", zone: "БЦ Сатти", pos: [1.8, -1.2], baseDaily: 97,
+    hours: { ...weekdays(h(8), h(22)), 6: [[h(10), h(20)]], 7: [[h(10), h(20)]] }, weekday: { 6: 0.6, 7: 0.5 }, locationType: "residential", story: "лобби: работает и в выходные" },
   { kitshopId: "621826", transferGroup: "SATTI", name: "6 БЦ Сатти А2 этаж", shortName: "Сатти А2", location: "БЦ Сатти · А2 этаж", zone: "БЦ Сатти", pos: [1.82, -1.2], baseDaily: 91 },
-  { kitshopId: "621586", transferGroup: "SATTI", name: "7 БЦ Сатти 4 этаж", shortName: "Сатти 4", location: "БЦ Сатти · 4 этаж", zone: "БЦ Сатти", pos: [1.8, -1.22], baseDaily: 98 },
-  { kitshopId: "622550", transferGroup: "KABLAN_KANKORD", name: "8 Конкорд 1 этаж", shortName: "Конкорд 1", location: "Конкорд · 1 этаж", zone: "Конкорд", pos: [-0.8, 1.9], baseDaily: 55 },
-  { kitshopId: "621137", transferGroup: "KABLAN_KANKORD", name: "9 Конкорд 2 этаж", shortName: "Конкорд 2", location: "Конкорд · 2 этаж", zone: "Конкорд", pos: [-0.78, 1.9], baseDaily: 78 },
+  { kitshopId: "621586", transferGroup: "SATTI", name: "7 БЦ Сатти 4 этаж", shortName: "Сатти 4", location: "БЦ Сатти · 4 этаж", zone: "БЦ Сатти", pos: [1.8, -1.22], baseDaily: 98,
+    hours: { ...weekdays(h(8), h(25)), 6: [[h(12), h(26)]] }, weekday: { 6: 0.7 },
+    peaks: [{ mu: 13, sigma: 1.1, w: 1 }, { mu: 23, sigma: 1.3, w: 0.75 }], locationType: "coworking", story: "IT-этаж: продажи до 01:00, в субботу до 02:00" },
+  { kitshopId: "622550", transferGroup: "KABLAN_KANKORD", name: "8 Конкорд 1 этаж", shortName: "Конкорд 1", location: "Конкорд · 1 этаж", zone: "Конкорд", pos: [-0.8, 1.9], baseDaily: 55,
+    hours: every(h(9), h(23)), weekday: { 6: 0.8, 7: 0.7 }, peaks: [{ mu: 13, sigma: 1.2, w: 1 }, { mu: 19.5, sigma: 1.5, w: 0.7 }], locationType: "coworking", story: "коворкинг: каждый день до 23:00" },
+  { kitshopId: "621137", transferGroup: "KABLAN_KANKORD", name: "9 Конкорд 2 этаж", shortName: "Конкорд 2", location: "Конкорд · 2 этаж", zone: "Конкорд", pos: [-0.78, 1.9], baseDaily: 78,
+    hours: { ...weekdays(h(9), h(20)), 6: [[h(10), h(22)]], 7: [[h(10), h(22)]] }, weekday: { 6: 1.6, 7: 1.5 },
+    peaks: [{ mu: 14, sigma: 1.6, w: 1 }, { mu: 18.5, sigma: 1.4, w: 0.8 }], locationType: "residential", story: "выходные сильнее будней" },
   { kitshopId: "622554", transferGroup: "KABLAN_KANKORD", name: "91 Конкорд 5 этаж", shortName: "Конкорд 5", location: "Конкорд · 5 этаж", zone: "Конкорд", pos: [-0.8, 1.92], baseDaily: 99 },
-  { kitshopId: "621135", transferGroup: "KABLAN_KANKORD", name: "92 Каблан 3 этаж", shortName: "Каблан 3", location: "Каблан · 3 этаж", zone: "Каблан", pos: [2.6, 1.5], baseDaily: 110 },
+  { kitshopId: "621135", transferGroup: "KABLAN_KANKORD", name: "92 Каблан 3 этаж", shortName: "Каблан 3", location: "Каблан · 3 этаж", zone: "Каблан", pos: [2.6, 1.5], baseDaily: 110,
+    hours: every(0, h(24)), weekday: { 6: 0.75, 7: 0.7 },
+    peaks: [{ mu: 9, sigma: 1, w: 0.5 }, { mu: 13, sigma: 1.2, w: 1 }, { mu: 21, sigma: 2, w: 0.5 }, { mu: 3, sigma: 2.5, w: 0.35 }],
+    locationType: "hospital", story: "круглосуточная точка (24/7), ночная смена" },
   { kitshopId: "621286", transferGroup: "KABLAN_KANKORD", name: "93 Каблан 5 этаж", shortName: "Каблан 5", location: "Каблан · 5 этаж", zone: "Каблан", pos: [2.62, 1.5], baseDaily: 86 },
-  { kitshopId: "622555", transferGroup: "KABLAN_KANKORD", name: "94 Каблан 6 этаж", shortName: "Каблан 6", location: "Каблан · 6 этаж", zone: "Каблан", pos: [2.6, 1.52], baseDaily: 65 },
-  { kitshopId: "622551", transferGroup: "ZHIBEK_ZHOLY", name: "95 Жибек Жолы 2 этаж", shortName: "Жибек Жолы 2", location: "Жибек Жолы · 2 этаж", zone: "Жибек Жолы", pos: [-0.2, 3.4], baseDaily: 33 },
-  { kitshopId: "622553", transferGroup: "NAZARBAYEVA", name: "Назарбаева 28/3", shortName: "Назарбаева 28/3", location: "пр. Назарбаева 28/3", zone: "Назарбаева", pos: [1.2, 2.8], baseDaily: 41 },
+  { kitshopId: "622555", transferGroup: "KABLAN_KANKORD", name: "94 Каблан 6 этаж", shortName: "Каблан 6", location: "Каблан · 6 этаж", zone: "Каблан", pos: [2.6, 1.52], baseDaily: 65,
+    hours: { 1: [[h(8), h(19)]], 2: [[h(8), h(19)]], 3: [[h(8), h(19)]], 4: [[h(8), h(19)]], 5: [[h(8), h(23)]], 6: [[h(11), h(18)]] },
+    weekday: { 5: 1.25, 6: 0.4 }, story: "разный график по дням: пятница до 23:00, суббота днём" },
+  { kitshopId: "622551", transferGroup: "ZHIBEK_ZHOLY", name: "95 Жибек Жолы 2 этаж", shortName: "Жибек Жолы 2", location: "Жибек Жолы · 2 этаж", zone: "Жибек Жолы", pos: [-0.2, 3.4], baseDaily: 33,
+    hours: every(h(16), h(26)), weekday: { 5: 1.3, 6: 1.4 },
+    peaks: [{ mu: 20, sigma: 1.5, w: 1 }, { mu: 0.5, sigma: 1.2, w: 0.6 }], locationType: "residential", story: "вечерняя/ночная точка 16:00–02:00" },
+  { kitshopId: "622553", transferGroup: "NAZARBAYEVA", name: "Назарбаева 28/3", shortName: "Назарбаева 28/3", location: "пр. Назарбаева 28/3", zone: "Назарбаева", pos: [1.2, 2.8], baseDaily: 41,
+    hours: every(h(7), h(24)), weekday: { 6: 1.3, 7: 1.35 },
+    peaks: [{ mu: 8, sigma: 0.9, w: 0.6 }, { mu: 19.5, sigma: 1.6, w: 1 }], locationType: "residential", story: "жилой дом: каждый день до полуночи, выходные сильнее" },
 ];
 
-// All real points are office buildings: weekdays, 08:00–20:00 (editable per fridge in Настройки).
+// Configured schedule: weekdays 08:00–20:00 for every point (editable in Настройки) — only a hint for the engine.
+// Real (simulated) activity comes from `hours`; points without `hours` really sell weekdays 08:00–20:00.
 ARCHETYPES.forEach((a, i) => {
-  Object.assign(a, REAL_FRIDGES[i], {
-    locationType: i === 7 || i === 8 ? "coworking" : "office",
+  const r = REAL_FRIDGES[i];
+  Object.assign(a, r, {
+    locationType: r.locationType ?? "office",
     workingDays: WEEKDAYS,
     open: h(8),
     close: h(20),
-    weekday: Object.fromEntries(Object.entries(a.weekday).filter(([d]) => Number(d) <= 5)),
+    hours: r.hours ?? weekdays(h(8), h(20)),
+    peaks: r.peaks ?? a.peaks,
+    weekday: r.weekday ?? Object.fromEntries(Object.entries(a.weekday).filter(([d]) => Number(d) <= 5)),
+    story: r.story ?? a.story,
   });
 });
 

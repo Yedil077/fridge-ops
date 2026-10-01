@@ -49,9 +49,12 @@ export default function AdminPage() {
       {error && <p className="mt-4 text-crit-ink">{(error as Error).message}</p>}
       {data?.mode === "mock" && (
         <p className="mt-3 rounded-lg border border-line bg-surface px-3 py-2 text-[12px] text-ink-3">
-          Режим симулятора: график влияет на рекомендации, но симулятор продолжает генерировать продажи по исходному графику.
+          График — только подсказка: движок учится по фактическим продажам (в том числе ночью и в выходные). Расхождения видны как SCHEDULE MISMATCH на странице точки и в Analytics → Время.
+          Закрытие раньше открытия (например 18:00–02:00) означает работу через полночь.
         </p>
       )}
+
+      <UntilTimeSetting />
 
       <UsersAdmin />
 
@@ -261,5 +264,35 @@ function RewardRow({ c }: { c: RewardsData["claims"][number] }) {
         )}
       </td>
     </tr>
+  );
+}
+
+/** Clock time of the user forecast mode "ДО HH:MM" — not a closing time of the fridges. */
+function UntilTimeSetting() {
+  const qc = useQueryClient();
+  const { data } = useQuery({ queryKey: ["admin", "settings"], queryFn: () => api<{ untilTime: string }>("/api/admin/settings") });
+  const [v, setV] = useState<string | null>(null);
+  const save = useMutation({
+    mutationFn: (untilTime: string) => api("/api/admin/settings", { method: "PUT", body: JSON.stringify({ untilTime }) }),
+    onSuccess: () => qc.invalidateQueries(),
+  });
+  const value = v ?? data?.untilTime ?? "20:00";
+  return (
+    <section className="card mt-6 p-4">
+      <div className="label mb-2">Режим прогноза «ДО HH:MM»</div>
+      <p className="mb-3 text-[13px] text-ink-3">
+        Пользовательский горизонт: спрос от текущего времени до этого часа. Это не время закрытия точек — после него режим просто недоступен до следующего дня.
+      </p>
+      <div className="flex items-center gap-2">
+        <input type="time" value={value} onChange={(e) => setV(e.target.value)} className="h-10 rounded-lg border border-line bg-surface px-3 text-[14px]" />
+        <button
+          onClick={() => save.mutate(value)}
+          disabled={save.isPending}
+          className="h-10 rounded-lg bg-surface-3 px-4 text-[13px] font-semibold disabled:opacity-40"
+        >
+          {save.isPending ? "…" : "Сохранить"}
+        </button>
+      </div>
+    </section>
   );
 }

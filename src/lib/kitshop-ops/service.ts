@@ -199,7 +199,7 @@ export class OpsService {
       const parent = this.get(op.dependsOn);
       if (parent?.status !== "CONFIRMED") {
         op.errorCode = "SOURCE_NOT_CONFIRMED";
-        op.error = "Ждём подтверждения разгрузки источника";
+        op.error = "Ждём подтверждения снятия в точке-источнике";
         if (op.status !== "DRAFT") this.setStatus(op, "DRAFT", op.error);
         this.d.save();
         return;

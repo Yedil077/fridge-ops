@@ -4,7 +4,7 @@
 
 1. **KitShop: чтение — отдельно, запись — за шлюзом.** Read-клиент (`src/services/kitshop/kitshopClient.ts`) содержит только `get*`-методы
    из белого списка документированных методов (официальная API v1.3: все методы POST, подпись MD5 в теле). Запись
-   (загрузка/разгрузка/списание через `MakeFillUp`, создание товара `AddProduct`) — только в `writer.ts` и только когда
+   (загрузка/снятие/списание через `MakeFillUp`, создание товара `AddProduct`) — только в `writer.ts` и только когда
    `KITSHOP_ENABLED=true`, `KITSHOP_WRITE_ENABLED=true`, `KITSHOP_WRITE_DRY_RUN=false` **и** точка в `KITSHOP_WRITE_SHOPS`.
    По умолчанию запись выключена; иначе — тренировочный KiT Shop (mock) или dry-run (только журнал).
    Удаление товаров, удаление из товарной базы и команды терминалу/замкам (`AddCommand`) в коде отсутствуют.

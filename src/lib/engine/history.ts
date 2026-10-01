@@ -20,7 +20,7 @@ export interface EngineContext {
   catDay: Float32Array;
   /** F*D daily totals */
   fridgeDay: Float32Array;
-  /** F*D: 1 if the day is a usable sample (scheduled working day with sales) */
+  /** F*D: 1 if the day is a usable sample: the fridge existed and really sold that day (any hour, any weekday) */
   sample: Uint8Array;
   /** Per history day: recency weight normalised within its bucket (w_bucket / days_in_bucket). */
   dayWeight: Float32Array;
@@ -29,9 +29,13 @@ export interface EngineContext {
   bias: (f: number, c: number) => number;
 }
 
-export function isWorkingDay(fr: Fridge, day: number, holidays: Set<number>): boolean {
-  if (!fr.isActive || day < fr.activeSinceDay) return false;
-  if (fr.closedOnHolidays && holidays.has(day)) return false;
+/** The fridge existed (and is not deactivated) on that day. Says nothing about hours — those are learned. */
+export function fridgeExisted(fr: Fridge, day: number): boolean {
+  return fr.isActive && day >= fr.activeSinceDay;
+}
+
+/** CONFIGURED working day (Настройки) — only a prior for cold start, never a filter on real sales. */
+export function scheduledDay(fr: Fridge, day: number): boolean {
   return fr.workingDays.includes(weekdayOf(day));
 }
 
@@ -57,7 +61,8 @@ export function buildContext(snap: NetworkSnapshot, bias: (f: number, c: number)
   for (let f = 0; f < F; f++)
     for (let d = 0; d < D; d++) {
       const day = snap.history.startDay + d;
-      sample[f * D + d] = isWorkingDay(snap.fridges[f], day, holidays) && fridgeDay[f * D + d] > 0 ? 1 : 0;
+      // real sales decide — a Saturday or night sale on a "weekdays 08–20" fridge is a valid sample
+      sample[f * D + d] = fridgeExisted(snap.fridges[f], day) && fridgeDay[f * D + d] > 0 ? 1 : 0;
     }
 
   const today = dayNumber(snap.now);
@@ -168,7 +173,10 @@ function fridgeMeanDaily(ctx: EngineContext, f: number): number {
 // ───────────────────────── baseline ─────────────────────────
 
 export interface Baseline {
+  /** expected hourly demand on a day the fridge sells (all 24 hours, nothing masked) */
   hourly: number[];
+  /** P(the fridge sells at all on this weekday), learned; configured schedule is a weak prior */
+  pOpen: number;
   nSameWeekday: number;
   nDayType: number;
   networkWeight: number;
@@ -192,7 +200,6 @@ export function baselineFor(ctx: EngineContext, f: number, c: number, day = ctx.
   const wd = weekdayOf(day);
   const weekend = isWeekend(wd);
   const { sameWeekdayK, dayTypeK } = ENGINE_CONFIG.history;
-  const fr = ctx.snap.fridges[f];
 
   const A = weightedHourlyMean(collectSamples(ctx, f, c, (d) => weekdayOf(d) === wd));
   const B = weightedHourlyMean(collectSamples(ctx, f, c, (d, age) => age <= 90 && isWeekend(weekdayOf(d)) === weekend));
@@ -203,11 +210,9 @@ export function baselineFor(ctx: EngineContext, f: number, c: number, day = ctx.
   let net = new Array<number>(24).fill(0);
   if (netW > 0.005) net = networkHourly(ctx, f, c, wd);
 
+  // every hour 00–23 comes from data; no hour is zeroed because of a configured schedule
   const hourly = new Array<number>(24);
-  for (let h = 0; h < 24; h++) {
-    const inside = h * 60 + 60 > fr.openingMinute && h * 60 < fr.closingMinute;
-    hourly[h] = inside ? wA * A.hourly[h] + (1 - wA) * (wB * B.hourly[h] + (1 - wB) * net[h]) : 0;
-  }
+  for (let h = 0; h < 24; h++) hourly[h] = wA * A.hourly[h] + (1 - wA) * (wB * B.hourly[h] + (1 - wB) * net[h]);
 
   // variability of daily totals on same-weekday samples
   const totals = collectSamples(ctx, f, c, (d, age) => weekdayOf(d) === wd && age <= 120).map((s) => s.total);
@@ -227,12 +232,33 @@ export function baselineFor(ctx: EngineContext, f: number, c: number, day = ctx.
         : A.n >= 4
         ? `История: ${A.n} аналогичных дней недели`
         : `История: ${B.n} дней того же типа`;
-  const res: Baseline = { hourly, nSameWeekday: A.n, nDayType: B.n, networkWeight: netW, label, cv };
+  const res: Baseline = { hourly, pOpen: openProbability(ctx, f, day), nSameWeekday: A.n, nDayType: B.n, networkWeight: netW, label, cv };
   cache.set(key, res);
   return res;
 }
 
-/** Network baseline scaled to the fridge's volume and opening hours (cold start). */
+/**
+ * P(the fridge sells on `day`'s weekday) = (days with sales + k·prior) / (calendar days + k).
+ * prior = 1 if the configured schedule says open, small otherwise — history wins as soon as it exists.
+ */
+export function openProbability(ctx: EngineContext, f: number, day: number): number {
+  const fr = ctx.snap.fridges[f];
+  if (!fridgeExisted(fr, day)) return 0;
+  const wd = weekdayOf(day);
+  let cal = 0;
+  let open = 0;
+  for (let d = 0; d < ctx.D; d++) {
+    const hd = histDay(ctx, d);
+    if (weekdayOf(hd) !== wd || !fridgeExisted(fr, hd) || ctx.today - hd > 120) continue;
+    cal++;
+    if (ctx.sample[f * ctx.D + d]) open++;
+  }
+  const k = ENGINE_CONFIG.activity.schedulePriorDays;
+  const prior = scheduledDay(fr, day) ? 1 : 0.15;
+  return (open + k * prior) / (cal + k);
+}
+
+/** Network baseline scaled to the fridge's volume (cold start). The hour shape comes from peers' real sales. */
 function networkHourly(ctx: EngineContext, f: number, c: number, wd: number): number[] {
   const fr = ctx.snap.fridges[f];
   const similar = ctx.snap.fridges
@@ -250,12 +276,7 @@ function networkHourly(ctx: EngineContext, f: number, c: number, wd: number): nu
     for (let h = 0; h < 24; h++) acc[h] += s.hourly[h] * ratio;
     used++;
   }
-  if (!used) return acc;
-  // keep the daily total, redistribute into own opening hours
-  const total = acc.reduce((a, b) => a + b, 0) / used;
-  const shaped = acc.map((v, h) => (h * 60 + 60 > fr.openingMinute && h * 60 < fr.closingMinute ? v : 0));
-  const shapedSum = shaped.reduce((a, b) => a + b, 0);
-  return shapedSum > 0 ? shaped.map((v) => (v / shapedSum) * total) : acc.map((v) => v / used);
+  return used ? acc.map((v) => v / used) : acc;
 }
 
 // ───────────────────────── corrections ─────────────────────────
@@ -311,17 +332,26 @@ export function monthPhaseFactor(ctx: EngineContext, f: number, day = ctx.today)
 
 // ───────────────────────── helpers used by explanations & profiles ─────────────────────────
 
-/** Sales in [fromMin, toMin) on the last n same-weekday working days, most recent first. */
+/**
+ * Sales in [fromMin, toMin) on the last n same-weekday days with sales, most recent first.
+ * toMin > 1440 continues into the following calendar day (e.g. 23:20–00:50).
+ */
 export function sameWeekdayWindowSales(ctx: EngineContext, f: number, c: number, fromMin: number, toMin: number, n = 4): number[] {
   const wd = weekdayOf(ctx.today);
   const out: number[] = [];
-  for (let d = ctx.D - 1; d >= 0 && out.length < n; d--) {
-    if (!ctx.sample[f * ctx.D + d] || weekdayOf(histDay(ctx, d)) !== wd) continue;
+  const part = (d: number, from: number, to: number) => {
+    if (d < 0 || d >= ctx.D) return 0;
     let s = 0;
     for (let h = 0; h < 24; h++) {
-      const overlap = Math.max(0, Math.min(toMin, h * 60 + 60) - Math.max(fromMin, h * 60)) / 60;
+      const overlap = Math.max(0, Math.min(to, h * 60 + 60) - Math.max(from, h * 60)) / 60;
       if (overlap > 0) s += hourlyAt(ctx, f, c, d, h) * overlap;
     }
+    return s;
+  };
+  for (let d = ctx.D - 1; d >= 0 && out.length < n; d--) {
+    if (!ctx.sample[f * ctx.D + d] || weekdayOf(histDay(ctx, d)) !== wd) continue;
+    let s = part(d, fromMin, Math.min(toMin, 1440));
+    if (toMin > 1440) s += part(d + 1, 0, toMin - 1440);
     out.push(Math.round(s));
   }
   return out;

@@ -154,7 +154,7 @@ export function SendStatusPanel({ state, onClose, onUpdate, isAdmin }: { state: 
     done = op.status !== "PENDING";
     if (op.status === "CONFIRMED") {
       icon = "✓";
-      title = `${op.typeLabel} подтверждена`;
+      title = `${op.typeLabel} — подтверждено`;
       body = `${op.fridgeName}: ${op.units} шт. ${MODE_NOTE[op.adapterMode]}`;
       tone = "border-good/60";
     } else if (op.status === "FAILED") {
@@ -224,7 +224,7 @@ export function OpRow({ op, actions }: { op: OpView; actions?: ReactNode }) {
         </div>
         <div className="mt-1 text-[13px] text-ink-3">
           {op.units} шт · {op.lines.length} поз. · {op.createdBy} · {fmtTime(op.createdAt)}
-          {op.transferRole && ` · перенос (${op.transferRole === "source" ? "разгрузка источника" : "загрузка цели"})`}
+          {op.transferRole && ` · перенос (${op.transferRole === "source" ? "снятие в источнике" : "загрузка в цель"})`}
           {op.adapterMode !== "live" && ` · ${op.adapterMode === "mock" ? "ТЕСТ" : "DRY-RUN"}`}
         </div>
         {op.error && op.status !== "CONFIRMED" && <div className="mt-1 text-[13px] text-warn">{op.error}</div>}
@@ -278,7 +278,7 @@ export function MissionKitShopStatus({ missionId }: { missionId: string }) {
         {sorted.map((o) => (
           <div key={o.id} className="flex items-center justify-between gap-2 text-[14px]">
             <span className="truncate">
-              {o.transferRole === "source" ? "Разгрузка" : "Загрузка"} · {o.fridgeName} · {o.units} шт
+              {o.transferRole === "source" ? "Снятие" : "Загрузка"} · {o.fridgeName} · {o.units} шт
             </span>
             <span className={clsx("shrink-0 text-[13px] font-semibold", STATUS_TONE[o.status])}>{o.statusLabel}</span>
           </div>

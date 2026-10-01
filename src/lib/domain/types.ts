@@ -56,6 +56,11 @@ export interface Fridge {
   transferGroup: string | null;
   location: string;
   locationType: LocationType;
+  /**
+   * CONFIGURED schedule (Настройки) — a hint only. Real activity is learned from sale timestamps;
+   * sales outside this schedule are kept and reported as SCHEDULE MISMATCH.
+   * closingMinute < openingMinute means the window continues after midnight (e.g. 18:00–02:00).
+   */
   workingDays: Weekday[];
   openingMinute: number; // minutes from 00:00
   closingMinute: number;
@@ -158,7 +163,9 @@ export interface CategoryForecast {
   monthFactor: number;
   bias: number;
   baseline: BaselineSource;
-  /** Minutes until stock hits zero at forecast rate; null if lasts until close. */
+  /** forecast for the NEXT calendar day (24 values) — used by windows that cross midnight */
+  tomorrowHourly: number[];
+  /** Minutes until stock hits zero at forecast rate; null if it lasts until the end of the activity window. */
   minutesToEmpty: number | null;
   projected1h: number;
   projected2h: number;
@@ -170,11 +177,17 @@ export interface CategoryForecast {
 
 export interface FridgeForecast {
   fridgeIndex: number;
+  /** ACTIVE now by observed activity (sale history for this weekday/hour, or sales in the last hour) */
   isOpenNow: boolean;
+  /** activity expected today (learned P(open) for this weekday, or already sold today) */
   isWorkingToday: boolean;
   isWorkingTomorrow: boolean;
+  /** minutes until the current observed activity window ends (0 when not active) */
   minutesToClose: number;
+  /** minutes until the next observed activity window starts (within 24 h), null if none */
   minutesToOpen: number | null;
+  /** end of the current / upcoming activity window, minutes from today's 00:00 (may exceed 1440) */
+  activityEndMinute: number;
   salesToday: number;
   revenueToday: number;
   pace: number;
@@ -221,11 +234,16 @@ export type MissionType = "URGENT" | "RESCUE" | "REBALANCE";
 /** What staff see instead of a score: 🔴 now · 🟡 today · 🟢 later */
 export type MissionUrgency = "NOW" | "TODAY" | "LATER";
 /**
- * Forecast horizon chosen by the user:
- *  • realtime — from the current time until the next check (~90 min)
- *  • until20  — until each fridge's closing time from Настройки (id kept for compatibility; shown as "ДО HH:MM")
+ * Forecast horizon chosen by the user. Always starts at the CURRENT time, any time of day (crosses midnight):
+ *  • realtime — next ~90 min (REAL TIME)
+ *  • h1 / h2  — next 1 / 2 hours
+ *  • until20  — until the clock time set in Настройки (default 20:00; id kept for compatibility, shown as "ДО HH:MM").
+ *               A pure user mode — once that time has passed it is reported as "horizon passed".
+ *  • activity — until the end of the fridge's OBSERVED activity (learned from real sale timestamps)
  */
-export type ForecastMode = "realtime" | "until20";
+export type ForecastMode = "realtime" | "h1" | "h2" | "until20" | "activity";
+
+export const FORECAST_MODE_IDS: ForecastMode[] = ["realtime", "h1", "h2", "until20", "activity"];
 
 export interface MissionProduct {
   productId: string;

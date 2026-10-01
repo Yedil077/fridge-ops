@@ -43,12 +43,19 @@ export function reservationsFrom(missions: Mission[], snap: NetworkSnapshot): Re
   return out;
 }
 
-export function analyze(snap: NetworkSnapshot, learning: LearningState, activeMissions: Mission[], mode: ForecastMode = "realtime"): AnalysisResult {
+export function analyze(
+  snap: NetworkSnapshot,
+  learning: LearningState,
+  activeMissions: Mission[],
+  mode: ForecastMode = "realtime",
+  untilMinute?: number,
+): AnalysisResult {
   const ctx = buildContext(snap, (f, c) => learning.forecastBias[biasKey(snap.fridges[f].id, snap.categories[c].id)] ?? 1);
   const forecasts = snap.fridges.map((_, f) => forecastFridge(ctx, f));
   const di = demandIndex(ctx);
   const drafts = recommend(ctx, forecasts, reservationsFrom(activeMissions, snap), learning.pairStats, {
     mode,
+    untilMinute,
     acceptance: learning.acceptance,
   });
   return { ctx, forecasts, demandIndex: di, drafts };

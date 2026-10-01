@@ -73,19 +73,20 @@ export function personality(ctx: EngineContext, f: number, di: DemandIndexRow): 
   for (let h = 0; h < 24; h++) hourlyAvg[h] = n90 ? hourlyAvg[h] / n90 : 0;
   const weekdayAvg = wdSum.map((s, i) => (wdN[i] ? s / wdN[i] : 0));
 
-  // best 2-hour window
+  // best 2-hour window on the circular day (23:00–01:00 is a valid peak)
   let peak: FridgePersonality["peakWindow"] = null;
   let best = 0;
-  for (let h = 0; h < 23; h++) {
-    const v = hourlyAvg[h] + hourlyAvg[h + 1];
+  for (let h = 0; h < 24; h++) {
+    const v = hourlyAvg[h] + hourlyAvg[(h + 1) % 24];
     if (v > best) {
       best = v;
       peak = { from: h, to: h + 2 };
     }
   }
   const dayTotal = hourlyAvg.reduce((a, b) => a + b, 0) || 1;
-  const morningShare = hourlyAvg.slice(0, 11).reduce((a, b) => a + b, 0) / dayTotal;
-  const eveningShare = hourlyAvg.slice(17).reduce((a, b) => a + b, 0) / dayTotal;
+  // morning 05–11; evening/night 17–05 (across midnight) — night sales are evening activity, not "morning"
+  const morningShare = hourlyAvg.slice(5, 11).reduce((a, b) => a + b, 0) / dayTotal;
+  const eveningShare = (hourlyAvg.slice(17).reduce((a, b) => a + b, 0) + hourlyAvg.slice(0, 5).reduce((a, b) => a + b, 0)) / dayTotal;
 
   const trend = snap.categories.map((_, c) => {
     const sixMonthsAgo = avgPerOpenDay(ctx, f, c, 150, 180);

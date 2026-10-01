@@ -8,9 +8,11 @@ import { HistoryExplorer } from "@/components/HistoryExplorer";
 import { useAnalytics, type AnalyticsView } from "@/lib/client/api";
 import { fmtClock, pct, signed } from "@/lib/client/format";
 import { categoryById } from "@/lib/domain/categories";
+import { ActivityPanel, WeekHourHeatmap } from "@/components/ActivityPanel";
 
 const TABS = [
   { id: "overview", label: "Overview" },
+  { id: "time", label: "Время" },
   { id: "heatmap", label: "Heatmap" },
   { id: "missions", label: "Missions" },
   { id: "history", label: "History" },
@@ -35,7 +37,7 @@ export default function AnalyticsPage() {
         ))}
       </div>
       {error && <p className="text-crit-ink">{(error as Error).message}</p>}
-      {tab === "history" ? <HistoryExplorer /> : !data ? <p className="text-[13px] text-ink-3">Считаю…</p> : tab === "overview" ? <Overview d={data} /> : tab === "heatmap" ? <Heatmap d={data} /> : <Missions d={data} />}
+      {tab === "history" ? <HistoryExplorer /> : !data ? <p className="text-[13px] text-ink-3">Считаю…</p> : tab === "overview" ? <Overview d={data} /> : tab === "time" ? <TimeTab d={data} /> : tab === "heatmap" ? <Heatmap d={data} /> : <Missions d={data} />}
     </Shell>
   );
 }
@@ -91,9 +93,58 @@ function Overview({ d }: { d: AnalyticsView }) {
       <ChartCard title="Day-of-week demand" subtitle="Вся сеть, средние продажи за день (90 дней)">
         <BarsChart data={d.weekday} x="name" series={[{ key: "avg", name: "Продажи/день", color: CHART.series1 }]} />
       </ChartCard>
-      <ChartCard title="Waste risk" subtitle="Ожидаемое списание к закрытию, шт.">
+      <ChartCard title="Waste risk" subtitle="Ожидаемое списание к концу активности точки, шт.">
         <BarsChart data={d.wasteRisk.slice(0, 10)} x="name" series={[{ key: "units", name: "Риск списания, шт.", color: CHART.series2 }]} layout="vertical" height={260} />
       </ChartCard>
+    </div>
+  );
+}
+
+/** Sales by hour 0–23 and weekday × hour: every real sale counts — night, morning, weekend. */
+function TimeTab({ d }: { d: AnalyticsView }) {
+  const t = d.time;
+  const [pick, setPick] = useState<string>(t.fridges[0]?.id ?? "");
+  const chosen = t.fridges.find((f) => f.id === pick);
+  return (
+    <div className="grid gap-4">
+      <ChartCard
+        title="SALES BY HOUR · 00–23"
+        subtitle={`Вся сеть, среднее продаж в час за день (90 дней, все дни недели). Ночные продажи 22:00–06:00: ${t.nightShare}% · выходные: ${t.weekendShare}%`}
+      >
+        <BarsChart data={t.salesByHour} x="label" series={[{ key: "avg", name: "Продажи/день", color: CHART.series1 }]} height={240} />
+      </ChartCard>
+      <ChartCard title="Heatmap · день недели × час" subtitle="Вся сеть, среднее продаж в день. Синим выделены ночь и выходные.">
+        <WeekHourHeatmap data={t.weekHour} weekdays={t.weekdays} />
+      </ChartCard>
+      <ChartCard title="Точки: активность по реальным продажам" subtitle="Peak hours, доля ночных и выходных продаж, фактические часы активности и расхождения с графиком">
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[760px] text-[12px]">
+            <thead>
+              <tr className="text-left text-ink-3">
+                <th className="py-1.5 pr-3 font-normal">Точка</th>
+                <th className="pr-3 font-normal">Peak hours</th>
+                <th className="pr-3 font-normal">Ночь</th>
+                <th className="pr-3 font-normal">Выходные</th>
+                <th className="pr-3 font-normal">Активна (пример)</th>
+                <th className="font-normal">График</th>
+              </tr>
+            </thead>
+            <tbody>
+              {t.fridges.map((f) => (
+                <tr key={f.id} onClick={() => setPick(f.id)} className={clsx("cursor-pointer border-t border-line", pick === f.id && "bg-surface-2")}>
+                  <td className="py-1.5 pr-3">{f.name}</td>
+                  <td className="pr-3">{f.peaks.join(", ") || "—"}</td>
+                  <td className="num pr-3">{f.nightShare}%</td>
+                  <td className="num pr-3">{f.weekendShare}%</td>
+                  <td className="pr-3 font-mono text-[11px]">{f.ranges.slice(0, 2).join(" · ")}{f.ranges.length > 2 ? " …" : ""}</td>
+                  <td>{f.mismatches.length ? <span className="text-warn">SCHEDULE MISMATCH</span> : <span className="text-ink-3">совпадает</span>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </ChartCard>
+      {chosen && <ActivityPanel a={chosen} title={`${chosen.name} · фактическая активность`} />}
     </div>
   );
 }

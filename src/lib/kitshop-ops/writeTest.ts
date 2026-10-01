@@ -147,7 +147,7 @@ export class WriteTest {
   async prepare(kind: "LOAD" | "UNLOAD", user: string): Promise<WriteTestRun> {
     const r = this.requireRun();
     if (r.auth?.result !== "PASS") throw new OpsError(409, "CONFLICT", "Шаг 1: сначала успешная проверка подключения");
-    if (kind === "UNLOAD" && r.load?.result !== "PASS") throw new OpsError(409, "CONFLICT", "Разгрузка −1 — только после успешной загрузки +1");
+    if (kind === "UNLOAD" && r.load?.result !== "PASS") throw new OpsError(409, "CONFLICT", "Снятие −1 — только после успешной загрузки +1");
     const leg = kind === "LOAD" ? r.load : r.unload;
     if (leg?.sentAt) throw new OpsError(409, "CONFLICT", "Эта операция уже отправлена — повторная подготовка запрещена");
     const before = await this.d.readStock(r.shop.shopId, r.product.productId);
@@ -289,8 +289,8 @@ export function summarize(r: WriteTestRun | null): { lines: SummaryLine[]; ready
         : "PENDING";
   const lines: SummaryLine[] = [
     { label: "Authentication", result: r.auth?.result ?? "PENDING", detail: r.auth?.detail ?? null },
-    { label: "Load +1", result: r.load?.result ?? "PENDING", detail: r.load?.detail ?? null },
-    { label: "Unload −1", result: r.unload?.result ?? "PENDING", detail: r.unload?.detail ?? null },
+    { label: "ЗАГРУЗКА +1", result: r.load?.result ?? "PENDING", detail: r.load?.detail ?? null },
+    { label: "СНЯТИЕ −1", result: r.unload?.result ?? "PENDING", detail: r.unload?.detail ?? null },
     { label: "Stock verification", result: stock, detail: r.load && r.unload ? `${r.load.before} → ${r.load.actual ?? "?"} → ${r.unload.actual ?? "?"}` : null },
     { label: "Duplicate protection", result: r.duplicate?.result ?? "PENDING", detail: r.duplicate?.detail ?? null },
     { label: "Audit log", result: r.audit?.result ?? "PENDING", detail: r.audit?.detail ?? null },

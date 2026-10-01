@@ -8,6 +8,30 @@ export const ENGINE_CONFIG = {
   /** Horizon for shortage risk. */
   riskHorizonMinutes: 120,
 
+  /**
+   * Observed activity (learned from real sale timestamps, 00:00–23:59, every weekday).
+   * The configured working schedule is only a hint for cold start — it never removes real sales.
+   */
+  activity: {
+    /** history window used for the weekday × hour profile */
+    windowDays: 90,
+    /** an hour is "active" when at least this share of that weekday's days had a sale in it … */
+    minFrequency: 0.25,
+    /** … and the average is at least this many units */
+    minAvgUnits: 0.15,
+    /** fewer calendar days of a weekday than this → fall back to the configured schedule */
+    minDays: 4,
+    /** night = [nightFrom, nightTo) across midnight, used for "night sales share" */
+    nightFrom: 22 * 60,
+    nightTo: 6 * 60,
+    /** prior strength of the configured schedule in P(open on this weekday) */
+    schedulePriorDays: 2,
+    /** "until end of observed activity" never looks further than this */
+    maxActivityHorizonMinutes: 12 * 60,
+    /** a closed fridge whose activity starts within this many minutes is forecast from that start */
+    upcomingStartMinutes: 180,
+  },
+
   history: {
     /** Recency buckets for weighted history (age in days, weight). */
     recencyBuckets: [
@@ -63,7 +87,7 @@ export const ENGINE_CONFIG = {
   transfer: {
     /** REAL TIME mode: look this far ahead (≈ until the next check). */
     realtimeHorizonMinutes: 90,
-    /* "ДО ЗАКРЫТИЯ" mode forecasts until each fridge's closing time from Настройки. */
+    /* REAL TIME window from the current time (any hour, crosses midnight). "ДО HH:MM" is a separate user mode. */
     /** Target may absorb up to this share of its expected sales until close. */
     absorbRatio: 0.8,
     /** Target must stay open at least this long after the transfer. */

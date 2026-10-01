@@ -1,9 +1,9 @@
 import { CATEGORIES } from "../domain/categories";
 import { QUARTERS, type NetworkSnapshot } from "../domain/types";
 import { hashSeed, lognormal, mulberry32, pickWeighted, poisson, uniform, type Rng } from "../random";
-import { DAY_MS, MINUTE_MS } from "../time";
+import { DAY_MS, MINUTE_MS, weekdayOf } from "../time";
 import { NETWORK_MIX } from "./archetypes";
-import { buildHistoryCube, buildModel, expectedDaily, isOpenDay, type RecordedDay, type SimModel } from "./model";
+import { buildHistoryCube, buildModel, dayShares, expectedDaily, isOpenDay, type RecordedDay, type SimModel } from "./model";
 
 /**
  * Live simulator: plays "today" in 15-minute steps on top of 180 days of generated history.
@@ -140,7 +140,8 @@ export class Simulator {
       if (!isOpenDay(this.model, f, s.day)) continue;
       const a = this.model.archetypes[f];
       let planned = 0;
-      for (let c = 0; c < C; c++) planned += expectedDaily(this.model, f, c, s.day);
+      const dayW = this.model.dayWeight[f][weekdayOf(s.day) - 1];
+      for (let c = 0; c < C; c++) planned += expectedDaily(this.model, f, c, s.day) * dayW;
       planned *= uniform(rng, 1.1, 1.3);
       for (let c = 0; c < C; c++) {
         const cid = CATEGORIES[c].id;
@@ -244,7 +245,7 @@ export class Simulator {
     for (let f = 0; f < F; f++) {
       if (!isOpenDay(this.model, f, s.day)) continue;
       for (let c = 0; c < C; c++) {
-        const share = this.model.quarterShare[f][c][q];
+        const share = dayShares(this.model, f, c, s.day)[q];
         if (share <= 0) continue;
         const lambda = expectedDaily(this.model, f, c, s.day) * share * this.demandMultiplier(f, c) * scale;
         const demand = poisson(rng, lambda);
@@ -310,9 +311,9 @@ export class Simulator {
   private openFridges(): number[] {
     const out: number[] = [];
     for (let f = 0; f < this.F; f++) {
-      const fr = this.model.fridges[f];
-      if (isOpenDay(this.model, f, this.state.day) && this.state.minute >= fr.openingMinute && this.state.minute < fr.closingMinute - 60)
-        out.push(f);
+      // fridges that really sell during the next hour (simulated activity, not the configured schedule)
+      const q = Math.floor(this.state.minute / 15);
+      if (isOpenDay(this.model, f, this.state.day) && q + 4 < QUARTERS && dayShares(this.model, f, 0, this.state.day)[q + 4] > 0) out.push(f);
     }
     return out;
   }

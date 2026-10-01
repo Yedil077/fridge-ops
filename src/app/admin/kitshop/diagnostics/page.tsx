@@ -107,7 +107,7 @@ export default function KitShopDiagnosticsPage() {
               ? btn("pause", "▶ RESUME WRITES", () => confirm("Снять паузу записи?") && post("pause", { action: "pause", on: false }), "bg-surface-3")
               : btn("pause", "⏸ PAUSE ALL WRITES", () => post("pause", { action: "pause", on: true }), "bg-crit/25 text-crit-ink")}
             <span className="text-[13px] text-ink-3">
-              {d.paused.on ? `Пауза с ${fmt(d.paused.at)} (${d.paused.by}). Любые загрузки/разгрузки/списания блокируются до отправки. Чтение работает.` : "Мгновенно блокирует любую запись (флаг в базе). Чтение продолжает работать."}
+              {d.paused.on ? `Пауза с ${fmt(d.paused.at)} (${d.paused.by}). Любые загрузки, снятия и списания блокируются до отправки. Чтение работает.` : "Мгновенно блокирует любую запись (флаг в базе). Чтение продолжает работать."}
             </span>
           </div>
         </Card>
@@ -274,14 +274,14 @@ function LegView({
   paused: boolean;
 }) {
   const sign = kind === "LOAD" ? "+1" : "−1";
-  const label = kind === "LOAD" ? "ЗАГРУЗКУ +1" : "РАЗГРУЗКУ −1";
+  const label = kind === "LOAD" ? "ЗАГРУЗКУ +1" : "СНЯТИЕ −1";
   const b = (key: string, text: string, body: Record<string, unknown>, tone: string, disabled = false) => (
     <button onClick={() => post(key, body)} disabled={!!busy || disabled} className={clsx("h-10 rounded-lg px-4 text-[13px] font-semibold disabled:opacity-40", tone)}>
       {busy === key ? "…" : text}
     </button>
   );
   return (
-    <Step n={n} title={`${kind} ${sign}`} result={leg?.result ?? "PENDING"}>
+    <Step n={n} title={`${kind === "LOAD" ? "ЗАГРУЗКА" : "СНЯТИЕ"} ${sign}`} result={leg?.result ?? "PENDING"}>
       {!enabled && <div className="text-[13px] text-ink-3">{kind === "LOAD" ? "После успешной проверки подключения." : "Только после успешной загрузки +1."}</div>}
       {enabled && !leg?.sentAt && b(`prep-${kind}`, leg ? "ОБНОВИТЬ ОСТАТОК И UUID" : "ПОЛУЧИТЬ ОСТАТОК И ПОДГОТОВИТЬ", { action: "test-prepare", kind }, "bg-surface-3")}
       {leg && (

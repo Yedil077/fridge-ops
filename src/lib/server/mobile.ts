@@ -214,9 +214,9 @@ export function mobileFridges(snap: NetworkSnapshot, a: AnalysisResult) {
           totalStock: ff.totalStock,
           salesToday: ff.salesToday,
           note: !ff.isOpenNow
-            ? ff.isWorkingToday
-              ? `работает ${fmtHM(f.openingMinute)}–${fmtHM(f.closingMinute)}`
-              : "сегодня выходной"
+            ? ff.minutesToOpen !== null
+              ? `обычно продажи с ${fmtHM(minuteOfDay(snap.now) + ff.minutesToOpen)}`
+              : "сейчас продаж обычно нет"
             : worst
               ? `${CATEGORIES[worst.categoryIndex].emoji} ${CATEGORIES[worst.categoryIndex].name.toLowerCase()}: ${STATUS_NOTE[worst.state]}`
               : "всё в порядке",
@@ -241,7 +241,12 @@ export function mobileFridge(snap: NetworkSnapshot, a: AnalysisResult, id: strin
     name: fr.name,
     location: fr.location,
     status: ff.status,
-    hours: `${fmtHM(fr.openingMinute)}–${fmtHM(fr.closingMinute)}`,
+    // observed activity window (learned from sales), not the configured schedule
+    hours: ff.isOpenNow
+      ? `активна до ~${fmtHM(ff.activityEndMinute)}`
+      : ff.minutesToOpen !== null
+        ? `продажи обычно с ${fmtHM(minuteOfDay(snap.now) + ff.minutesToOpen)}`
+        : "сейчас продаж обычно нет",
     isOpenNow: ff.isOpenNow,
     salesToday: ff.salesToday,
     categories: ff.categories

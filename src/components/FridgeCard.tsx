@@ -62,7 +62,7 @@ export function FridgeCard({ f }: { f: FridgeCardData }) {
 
       <div className="mt-2 min-h-[18px] text-[11px] leading-snug">
         {!f.isOpenNow ? (
-          <span className="text-ink-3">{f.isWorkingToday ? `Работает ${f.opensAt}–${f.closesAt}` : "Сегодня выходной"}</span>
+          <span className="text-ink-3">{f.opensAt ? `Обычно продажи с ${f.opensAt}` : "Сейчас продаж обычно нет"}</span>
         ) : f.anomaly ? (
           <span className="text-warn">⚡ ANOMALY · спрос {signed(f.anomaly.deviationPct)} к норме</span>
         ) : f.forecastNote ? (

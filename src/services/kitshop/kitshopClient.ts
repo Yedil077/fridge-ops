@@ -41,8 +41,8 @@ export const READ_ENDPOINTS = {
   products: { path: "GetProducts", confirmed: true, note: "§3.3 справочник товаров (Barcode, VendorCode)" },
   stocks: { path: "GetShopStocks", confirmed: true, note: "§3.20 остатки одной торговой точки" },
   sales: { path: "GetSales", confirmed: true, note: "§3.22 продажи без позиций (позиции — GetSaleById), период ≤ 60 дней" },
-  fillUps: { path: "GetFillUps", confirmed: true, note: "§3.19 загрузки/разгрузки, период ≤ 60 дней" },
-  fillUpById: { path: "GetFillUpById", confirmed: true, note: "§3.12 детали загрузки/разгрузки" },
+  fillUps: { path: "GetFillUps", confirmed: true, note: "§3.19 операции загрузки и снятия (FillUps), период ≤ 60 дней" },
+  fillUpById: { path: "GetFillUpById", confirmed: true, note: "§3.12 детали операции загрузки/снятия" },
 } as const satisfies Record<string, ReadEndpoint>;
 
 type EndpointName = keyof typeof READ_ENDPOINTS;

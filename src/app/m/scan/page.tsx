@@ -14,7 +14,7 @@ import { MODE_NOTE, newOperationId, submitOperation, useOpsCatalog, type OpType,
 
 const TYPES: { id: OpType; label: string; verb: string }[] = [
   { id: "LOAD", label: "Загрузка", verb: "ЗАГРУЗКУ" },
-  { id: "UNLOAD", label: "Разгрузка", verb: "РАЗГРУЗКУ" },
+  { id: "UNLOAD", label: "Снятие", verb: "СНЯТИЕ" },
   { id: "WRITE_OFF", label: "Списание", verb: "СПИСАНИЕ" },
 ];
 const REASONS = ["Истёк срок", "Повреждена упаковка", "Брак", "Другое"];
@@ -224,7 +224,7 @@ function Scan() {
           </button>
         ))}
       </div>
-      {type === "WRITE_OFF" && <p className="mt-2 px-1 text-[12px] text-ink-3">В KiT Shop списание проводится как разгрузка с пометкой «СПИСАНИЕ» и причиной.</p>}
+      {type === "WRITE_OFF" && <p className="mt-2 px-1 text-[12px] text-ink-3">Списание — товар убран из оборота (не перемещение). В KiT Shop проводится как уменьшение остатка с пометкой «СПИСАНИЕ» и причиной.</p>}
       {cat.data && cat.data.write.defaultMode !== "live" && cat.data.write.liveShops.length === 0 && (
         <p className="mt-2 rounded-xl bg-accent/10 px-3 py-2 text-[12px] text-accent">{MODE_NOTE[cat.data.write.defaultMode]}</p>
       )}

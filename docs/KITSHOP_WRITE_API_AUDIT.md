@@ -93,7 +93,7 @@ The other write methods do not cover it either. Options:
 * (b) write-offs stay local only until KiT Shop provides a method.
 
 **We do not fake a write-off endpoint.** In the app WRITE-OFF is implemented as (a). It is shown as
-"Списание (в KiT Shop как разгрузка)" and needs confirmation from the business before Phase E.
+"Списание (в KiT Shop как уменьшение остатка)" and needs confirmation from the business before Phase E.
 
 ### 2.5 Product catalog
 
