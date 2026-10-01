@@ -23,6 +23,25 @@ test("KitShop client exposes read methods only", () => {
   }
 });
 
+test("KitShop writes: only documented methods, gated, nothing destructive", () => {
+  const writer = code("src/services/kitshop/writer.ts");
+  const called = [...writer.matchAll(/transport\.call\("(\w+)"/g)].map((m) => m[1]).sort();
+  assert.deepEqual(called, ["AddProduct", "MakeFillUp"], "the live writer may call MakeFillUp and AddProduct only");
+  for (const f of walk("src")) {
+    if (!/\.(ts|tsx)$/.test(f)) continue;
+    assert.doesNotMatch(code(f), /"(DeleteProduct|DeleteProductGroup|RemoveProductFromProductBaseTemplate|AddCommand)"/, `${f} must not call destructive / lock methods`);
+  }
+  assert.match(writer, /assertOpen\(req\.shopId\)/, "MakeFillUp re-checks the gate and the shop allowlist");
+  const gate = code("src/lib/server/kitshopWrite.ts");
+  assert.match(gate, /config\.enabled && gate\.writeEnabled && !gate\.dryRun && gate\.shops\.length > 0/);
+  const cfg = code("src/services/kitshop/config.ts");
+  assert.match(cfg, /writeEnabled: process\.env\.KITSHOP_WRITE_ENABLED === "true"/, "writes are off unless explicitly true");
+  assert.match(cfg, /dryRun: process\.env\.KITSHOP_WRITE_DRY_RUN !== "false"/, "dry-run is on unless explicitly false");
+  const env = read(".env.example");
+  assert.match(env, /^KITSHOP_WRITE_ENABLED=false$/m);
+  assert.match(env, /^KITSHOP_WRITE_DRY_RUN=true$/m);
+});
+
 test("KitShop credentials never reach client code", () => {
   const clientFiles = walk("src")
     .filter((f) => /\.(ts|tsx)$/.test(f))

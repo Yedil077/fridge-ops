@@ -2,6 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Mission, Weekday } from "../domain/types";
 import type { LearningState } from "../engine/feedback";
+import type { ConfirmedMapping } from "../kitshop-ops/mapping";
+import type { AuditEntry, KsOperation } from "../kitshop-ops/types";
 import type { SimState } from "../simulator/simulator";
 
 /**
@@ -134,6 +136,12 @@ export interface AppState {
   lastAnalysisAt: number | null;
   lastSyncAt: number | null;
   sim: SimState | null;
+  /** KiT Shop write journal (load / unload / write-off / transfer legs) — see lib/kitshop-ops */
+  operations: KsOperation[];
+  /** audit log of every write and every manual decision */
+  audit: AuditEntry[];
+  /** confirmed Fridge Ops product → KiT Shop product links (our product id → mapping) */
+  productMappings: Record<string, ConfirmedMapping>;
 }
 
 const MAX_MISSIONS = 1500;
@@ -170,6 +178,9 @@ export function emptyState(): AppState {
     lastAnalysisAt: null,
     lastSyncAt: null,
     sim: null,
+    operations: [],
+    audit: [],
+    productMappings: {},
   };
 }
 
@@ -196,6 +207,14 @@ export function compact(state: AppState): AppState {
   state.missions = state.missions.slice(-MAX_MISSIONS);
   state.xpEvents = state.xpEvents.slice(-2000);
   state.notifications = state.notifications.slice(-300);
+  // keep every open operation; trim only old finished ones
+  if (state.operations.length > 3000) {
+    const open = new Set(["DRAFT", "PENDING", "UNKNOWN", "REQUIRES_REVIEW", "WAITING_FOR_CONNECTION"]);
+    const excess = state.operations.length - 3000;
+    let dropped = 0;
+    state.operations = state.operations.filter((o) => open.has(o.status) || dropped++ >= excess);
+  }
+  state.audit = state.audit.slice(-5000);
   const now = Date.now();
   state.sessions = state.sessions.filter((s) => s.expiresAt > now && (!s.revokedAt || now - s.revokedAt < 30 * 86_400_000));
   return state;

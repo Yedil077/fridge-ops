@@ -3,10 +3,10 @@ import { currentUser, handle } from "@/lib/server/http";
 import { getRuntime } from "@/lib/server/runtime";
 
 const Body = z.object({
-  action: z.enum(["advance15", "advance60", "advance180", "to-close", "now", "sales", "shortage", "overstock", "anomaly", "reset-day", "analyze", "reseed"]),
+  action: z.enum(["advance15", "advance60", "advance180", "to-close", "now", "sales", "shortage", "overstock", "anomaly", "reset-day", "analyze", "reseed", "ks-timeout", "ks-lost", "ks-reject", "ks-offline", "ks-slow"]),
 });
 
-/** DEV PANEL — simulator only. Never touches KitShop. */
+/** DEV PANEL — simulator and the fake (mock) KiT Shop only. Never touches the real KitShop. */
 export const POST = handle(async (req: Request) => {
   await currentUser("ADMIN");
   const { action } = Body.parse(await req.json());

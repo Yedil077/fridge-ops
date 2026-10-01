@@ -28,6 +28,7 @@ Fridge Ops backend (Next.js API + PostgreSQL)
 | [docs/SECURITY.md](docs/SECURITY.md) | вход по PIN, роли, сессии, KitShop read-only |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | движок рекомендаций и модель данных |
 | [docs/KITSHOP_API_REQUIREMENTS.md](docs/KITSHOP_API_REQUIREMENTS.md) | что нужно от KitShop |
+| [docs/KITSHOP_WRITE_API_AUDIT.md](docs/KITSHOP_WRITE_API_AUDIT.md) | аудит API записи: загрузка/разгрузка/списание, товары, замки, фазы A–E |
 
 ## Запуск
 

@@ -34,3 +34,8 @@ services:
         value: Asia/Almaty
       - key: KITSHOP_ENABLED
         value: "false"
+      # KiT Shop writes stay OFF until Phase D (docs/KITSHOP_WRITE_API_AUDIT.md)
+      - key: KITSHOP_WRITE_ENABLED
+        value: "false"
+      - key: KITSHOP_WRITE_DRY_RUN
+        value: "true"

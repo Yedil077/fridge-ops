@@ -1,61 +1,79 @@
 import { z } from "zod";
 
 /**
- * Raw KitShop DTOs.
- * ⚠ The exact response shapes are NOT confirmed yet (see docs/KITSHOP_API_REQUIREMENTS.md).
- * Schemas are intentionally permissive (passthrough) and list the fields we NEED;
- * they will be tightened once real responses are available.
+ * KiT Shop DTOs, field names as in the official docs v1.3.
+ * Schemas are permissive (passthrough, optional fields) — real responses may carry more fields
+ * or omit "Optional" ones; they are tightened after Phase D compares them with real answers.
  */
 
-export const KitShopSaleSchema = z
-  .object({
-    saleId: z.union([z.string(), z.number()]),
-    shopId: z.union([z.string(), z.number()]),
-    productId: z.union([z.string(), z.number()]),
-    quantity: z.number(),
-    price: z.number().optional(),
-    soldAt: z.string(), // ISO date-time; timezone to be confirmed
-  })
-  .passthrough();
+const Id = z.union([z.number(), z.string()]).transform((v) => String(v));
 
 export const KitShopShopSchema = z
   .object({
-    shopId: z.union([z.string(), z.number()]),
-    name: z.string(),
-    address: z.string().optional(),
-    isActive: z.boolean().optional(),
-    latitude: z.number().optional(),
-    longitude: z.number().optional(),
+    ShopId: Id,
+    ShopName: z.string(),
+    Address: z.string().nullish(),
+    Place: z.string().nullish(),
+    Coordinates: z.string().nullish(),
+    WorkTime: z.string().nullish(),
+    StocksAccounting: z.union([z.boolean(), z.number()]).nullish(),
+    /** mentioned by §3.32 but missing from the GetShops field table — verify in Phase D */
+    ProductBaseTemplateId: z.number().nullish(),
   })
   .passthrough();
 
 export const KitShopProductSchema = z
   .object({
-    productId: z.union([z.string(), z.number()]),
-    name: z.string(),
-    group: z.string().optional(),
-    price: z.number().optional(),
+    ProductId: Id,
+    ProductName: z.string(),
+    UnitType: z.number().nullish(),
+    Price: z.number().nullish(),
+    GroupId: z.number().nullish(),
+    Barcode: z.string().nullish(),
+    VendorCode: z.string().nullish(),
+    ShortCodes: z.string().nullish(),
   })
   .passthrough();
 
 export const KitShopStockSchema = z
   .object({
-    shopId: z.union([z.string(), z.number()]),
-    productId: z.union([z.string(), z.number()]),
-    quantity: z.number(),
-    at: z.string().optional(),
+    ProductId: Id,
+    ProductName: z.string().nullish(),
+    Barcode: z.string().nullish(),
+    VendorCode: z.string().nullish(),
+    Quantity: z.number(),
+    ExpiryDate: z.string().nullish(),
   })
   .passthrough();
 
-export type KitShopSale = z.infer<typeof KitShopSaleSchema>;
+export const KitShopFillUpSchema = z
+  .object({
+    FillupId: Id,
+    ShopId: Id,
+    FillupType: z.number().nullish(),
+    FillupSource: z.number().nullish(),
+    DeviceId: z.number().nullish(),
+    FillupDateTime: z.string().nullish(),
+    UserName: z.string().nullish(),
+    Notes: z.string().nullish(),
+    Details: z
+      .array(z.object({ ProductId: Id, Quantity: z.number(), ExpiryDate: z.string().nullish() }).passthrough())
+      .nullish(),
+  })
+  .passthrough();
+
+export const KitShopSaleSchema = z.object({ SaleId: Id.optional(), ShopId: Id.optional() }).passthrough();
+
 export type KitShopShop = z.infer<typeof KitShopShopSchema>;
 export type KitShopProduct = z.infer<typeof KitShopProductSchema>;
 export type KitShopStock = z.infer<typeof KitShopStockSchema>;
+export type KitShopFillUp = z.infer<typeof KitShopFillUpSchema>;
+export type KitShopSale = z.infer<typeof KitShopSaleSchema>;
 
 export interface SalesQuery {
-  /** ISO date-time, inclusive */
-  from: string;
-  /** ISO date-time, exclusive */
-  to: string;
-  shopIds?: string[];
+  /** wall-clock ms, inclusive */
+  from: number;
+  /** wall-clock ms; the period must be ≤ 60 days (ResultCode 30) */
+  to: number;
+  shopId?: string;
 }

@@ -4,7 +4,7 @@
  * Bad-connection safety for staff on the floor.
  *  • Checklist progress is saved locally after every tap — a lost connection or a closed tab loses nothing.
  *  • Mission actions that fail because of the network go to a local outbox and are re-sent when online.
- * Only OUR API is called. KitShop is read-only and never touched from here.
+ * Only OUR API is called — never KiT Shop directly (KiT Shop operations go through our backend).
  */
 
 const PROGRESS_KEY = (id: string) => `fo-progress-${id}`;
@@ -78,7 +78,10 @@ export async function sendOrQueue<T>(url: string, method: string, body: unknown)
   try {
     const res = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw Object.assign(new Error((data as { error?: string }).error ?? `HTTP ${res.status}`), { status: res.status });
+    if (!res.ok) {
+      const d = data as { error?: string; code?: string; details?: unknown };
+      throw Object.assign(new Error(d.error ?? `HTTP ${res.status}`), { status: res.status, code: d.code, details: d.details });
+    }
     return { queued: false, data: data as T };
   } catch (e) {
     if ((e as { status?: number }).status) throw e;

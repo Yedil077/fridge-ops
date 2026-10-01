@@ -10,6 +10,13 @@ import { bootstrapUsers } from "./users";
 import { Simulator } from "../simulator/simulator";
 import { dayNumber, fmtHM, minuteOfDay, MINUTE_MS, wallClockNow, weekdayOf } from "../time";
 import { KitShopDataSource } from "@/services/kitshop";
+import { OpsService } from "../kitshop-ops/service";
+import { resolveMapping, type CatalogItem, type MappingResult } from "../kitshop-ops/mapping";
+import type { KsOperation, OpLine, OpType } from "../kitshop-ops/types";
+import { adapterFor, catalogAdapter, mockAdapter, trustAbsent, writeGate } from "./kitshopWrite";
+import { addProductBody } from "../kitshop-ops/adapters";
+import type { CatalogProductInput } from "../kitshop-ops/types";
+import { newId } from "./pin";
 
 /**
  * Server runtime: owns the data source (simulator in MOCK mode), our app state,
@@ -62,11 +69,28 @@ class Runtime {
   private saving: Promise<void> | null = null;
   private dirty = false;
   private catchingUp = false;
+  /** KiT Shop write operations (load / unload / write-off / transfer legs) */
+  readonly ops: OpsService;
 
   private constructor(state: AppState, store: StateStore) {
     this.mode = process.env.DATA_SOURCE === "kitshop" ? "kitshop" : "mock";
     this.state = state;
     this.store = store;
+    // getters, not values: `reseed` replaces this.state
+    const self = this;
+    this.ops = new OpsService({
+      get state() {
+        return self.state;
+      },
+      adapterFor,
+      now: () => (this.sim ? this.sim.now : wallClockNow(TZ)),
+      save: () => this.save(),
+      newId,
+      timeoutMs: writeGate().timeoutMs,
+      trustAbsent,
+      verifyWindowMs: 5 * 60_000,
+      onConfirmed: (op) => this.applyConfirmedToSim(op),
+    });
   }
 
   /** Loads OUR state from the configured store (PostgreSQL in production) and prepares the runtime. */
@@ -85,6 +109,10 @@ class Runtime {
     if (rt.mode === "mock") rt.ensureSim();
     rt.save();
     await rt.saving;
+    // background pass for KiT Shop operations: send provably-unsent ones once, verify UNKNOWN ones
+    setInterval(() => {
+      rt.ops.tick().catch((e) => console.error("[kitshop-ops] tick failed", e));
+    }, 60_000).unref?.();
     return rt;
   }
 
@@ -518,6 +546,7 @@ class Runtime {
         m.status = "COMPLETED";
         m.completedAt = now;
         m.completedBy = user;
+        this.startTransfer(snap, m, user);
         // XP for the work; OPS POINTS come later, only for the confirmed result
         xp.push(this.award(user, X.missionCompleted, 0, "Задача выполнена", m.id));
         if (m.type === "URGENT") xp.push(this.award(user, X.urgentBonus, 0, "Срочная задача", m.id));
@@ -545,6 +574,176 @@ class Runtime {
     }
     this.save();
     return { mission: m, xp, impact };
+  }
+
+  // ───────────────────────── KiT Shop operations ─────────────────────────
+
+  /**
+   * KiT Shop product catalog as we know it.
+   * MOCK: a fake catalog built from the simulator's products (a few are deliberately missing, to exercise
+   * MAPPING_REQUIRED / "Создать в KiT Shop"), plus products created through the mock adapter.
+   * KITSHOP: filled by the catalog sync (GetProducts) — not connected yet → empty → every line needs mapping.
+   */
+  catalog(snap: NetworkSnapshot): CatalogItem[] {
+    if (this.mode !== "mock") return [];
+    const items: CatalogItem[] = snap.products
+      .map((p, i) => ({ p, i }))
+      .filter(({ i }) => i % 17 !== 16)
+      .map(({ p, i }) => ({ productId: String(810_000 + i), name: p.name, barcode: p.barcode, vendorCode: p.sku }));
+    for (const [pid, m] of Object.entries(this.state.productMappings)) {
+      if (m.matchedBy !== "manual" || items.some((c) => c.productId === m.kitshopProductId)) continue;
+      const p = snap.products.find((x) => x.id === pid);
+      if (p) items.push({ productId: m.kitshopProductId, name: p.name, barcode: p.barcode, vendorCode: p.sku });
+    }
+    return items;
+  }
+
+  mappingFor(snap: NetworkSnapshot, productId: string, catalog = this.catalog(snap)): MappingResult {
+    const p = snap.products.find((x) => x.id === productId);
+    if (!p) return { status: "MAPPING_REQUIRED", reason: "not_found", suggestions: [] };
+    return resolveMapping({ id: p.id, name: p.name, barcode: p.barcode, sku: p.sku }, catalog, this.state.productMappings[p.id]);
+  }
+
+  /** Our items → operation lines with the stable KiT Shop ProductId ('' = not mapped → MAPPING_REQUIRED). */
+  opLines(snap: NetworkSnapshot, items: { productId: string; qty: number }[]): OpLine[] {
+    const catalog = this.catalog(snap);
+    return items.map((it) => {
+      const p = snap.products.find((x) => x.id === it.productId);
+      const m = this.mappingFor(snap, it.productId, catalog);
+      return { productId: it.productId, kitshopProductId: m.status === "MAPPED" ? m.kitshopProductId : "", name: p?.name ?? it.productId, qty: it.qty };
+    });
+  }
+
+  async submitOperation(
+    input: { id: string; type: OpType; fridgeId: string; items: { productId: string; qty: number }[]; reason?: string },
+    user: string,
+  ): Promise<{ op: KsOperation; duplicate: boolean }> {
+    const existing = this.ops.get(input.id);
+    if (existing) {
+      // idempotent replay (double tap, offline re-send): nothing is sent again
+      this.ops.audit(user, "op.duplicate_submit", "operation", existing.id, { status: existing.status });
+      return { op: existing, duplicate: true };
+    }
+    const snap = await this.snapshot();
+    const fridge = snap.fridges.find((f) => f.id === input.fridgeId);
+    if (!fridge) throw new HttpError(404, "Холодильник не найден");
+    return this.ops.submit(
+      {
+        id: input.id,
+        type: input.type,
+        fridgeId: fridge.id,
+        shopId: /^\d+$/.test(fridge.externalId) ? fridge.externalId : "",
+        fridgeName: fridge.name,
+        lines: this.opLines(snap, input.items),
+        reason: input.reason ?? null,
+        applyToSim: this.mode === "mock",
+      },
+      user,
+    );
+  }
+
+  /** Mission completed → TRANSFER = source UNLOAD + target LOAD(s) with the ACTUAL quantities. Runs in background. */
+  private startTransfer(snap: NetworkSnapshot, m: Mission, user: string) {
+    const fr = new Map(snap.fridges.map((f) => [f.id, f]));
+    const src = fr.get(m.sourceFridgeId);
+    if (!src) return;
+    const byTarget = new Map<string, { productId: string; qty: number }[]>();
+    for (const line of m.lines) {
+      const t = line.targetFridgeId ?? m.targetFridgeId;
+      for (const p of line.products) if ((p.actualQty ?? 0) > 0) (byTarget.get(t) ?? byTarget.set(t, []).get(t)!).push({ productId: p.productId, qty: p.actualQty ?? 0 });
+    }
+    const shopOf = (id: string) => (/^\d+$/.test(id) ? id : "");
+    const targets = [...byTarget.entries()].flatMap(([id, items]) => {
+      const f = fr.get(id);
+      return f ? [{ fridgeId: f.id, shopId: shopOf(f.externalId), fridgeName: f.name, lines: this.opLines(snap, items) }] : [];
+    });
+    if (!targets.length) return;
+    this.ops
+      // MOCK: the mission already moved the units inside the simulator — the legs must not move them again
+      .transfer({ missionId: m.id, source: { fridgeId: src.id, shopId: shopOf(src.externalId), fridgeName: src.name }, targets, applyToSim: false }, user)
+      .catch((e) => {
+        console.warn(`[kitshop-ops] transfer for mission #${m.number} not started:`, e instanceof Error ? e.message : e);
+        this.ops.audit(user, "transfer.not_started", "mission", m.id, { error: e instanceof Error ? e.message : String(e) });
+        this.save();
+      });
+  }
+
+  // ── product mapping (admin) ──
+
+  /** ADMIN links our product to a KiT Shop ProductId (e.g. after choosing a name suggestion). */
+  async confirmMapping(productId: string, kitshopProductId: string, admin: string) {
+    const snap = await this.snapshot();
+    if (!snap.products.some((p) => p.id === productId)) throw new HttpError(404, "Товар не найден");
+    const catalog = this.catalog(snap);
+    if (this.mode === "mock" && !catalog.some((c) => c.productId === kitshopProductId)) throw new HttpError(422, "Такого товара нет в каталоге KiT Shop");
+    const taken = Object.entries(this.state.productMappings).find(([pid, m]) => pid !== productId && m.kitshopProductId === kitshopProductId && !m.inactive);
+    if (taken) throw new HttpError(409, "Этот товар KiT Shop уже привязан к другому блюду");
+    const prev = this.state.productMappings[productId];
+    this.state.productMappings[productId] = { kitshopProductId, matchedBy: "manual", confirmedBy: admin, at: Date.now(), inactive: prev?.inactive };
+    this.ops.audit(admin, "mapping.confirm", "product", productId, { kitshopProductId, previous: prev?.kitshopProductId ?? null });
+    this.save();
+    return { ok: true };
+  }
+
+  /** "Деактивировать локально": hide in Fridge Ops. KiT Shop is never asked to delete anything. */
+  async setProductInactive(productId: string, inactive: boolean, admin: string) {
+    const snap = await this.snapshot();
+    const cur = this.state.productMappings[productId];
+    const m = this.mappingFor(snap, productId);
+    this.state.productMappings[productId] = cur
+      ? { ...cur, inactive }
+      : { kitshopProductId: m.status === "MAPPED" ? m.kitshopProductId : "", matchedBy: m.status === "MAPPED" ? m.matchedBy : "manual", confirmedBy: admin, at: Date.now(), inactive };
+    this.ops.audit(admin, inactive ? "product.deactivate_local" : "product.activate_local", "product", productId, {});
+    this.save();
+    return { ok: true };
+  }
+
+  /** ADMIN only. preview → exactly what AddProduct would receive. Create → only through the gated adapter. */
+  async createInKitShop(productId: string, preview: boolean, admin: string) {
+    const snap = await this.snapshot();
+    const p = snap.products.find((x) => x.id === productId);
+    if (!p) throw new HttpError(404, "Товар не найден");
+    const m = this.mappingFor(snap, productId);
+    if (m.status === "MAPPED") throw new HttpError(409, "Товар уже есть в KiT Shop");
+    if (m.reason === "ambiguous") throw new HttpError(409, "В KiT Shop несколько товаров с этим штрихкодом — сначала разберитесь с дублями");
+    const input: CatalogProductInput = { name: p.name, barcode: p.barcode, vendorCode: p.sku, price: p.price || null, unitType: 1, taxType: 0, accuracyType: 1 };
+    const adapter = catalogAdapter();
+    const body = addProductBody(input);
+    if (preview) {
+      return {
+        preview: true,
+        mode: adapter.mode,
+        method: "AddProduct",
+        body,
+        notes: [
+          "UnitType 1 = штучное, TaxType 0 = не выставлен, AccuracyType 1 = абсолютная — проверьте перед созданием.",
+          m.suggestions.length ? `Похожие товары уже есть в KiT Shop: ${m.suggestions.map((s) => s.name).join(", ")}. Возможно, нужна привязка, а не новый товар.` : null,
+        ].filter(Boolean),
+      };
+    }
+    this.ops.audit(admin, "product.create_request", "product", productId, { mode: adapter.mode, body });
+    const res = await adapter.addProduct(input);
+    this.ops.audit(admin, "product.create_result", "product", productId, { mode: adapter.mode, outcome: res.kind, productId: res.productId ?? null });
+    if (res.kind === "ok" && res.productId) {
+      this.state.productMappings[productId] = { kitshopProductId: res.productId, matchedBy: "manual", confirmedBy: admin, at: Date.now() };
+    }
+    this.save();
+    if (res.kind === "ok") return { preview: false, mode: adapter.mode, created: !!res.productId, kitshopProductId: res.productId ?? null, message: res.message ?? "Создано" };
+    if (res.kind === "rejected") throw new HttpError(502, `KiT Shop отказал: ${res.message} (код ${res.code})`);
+    // AddProduct is not idempotent: never retry blindly — search the catalog by barcode first
+    throw new HttpError(504, "Нет ответа от KiT Shop. Не повторяйте: сначала проверьте каталог по штрихкоду (товар мог создаться).");
+  }
+
+  /** MOCK only: a confirmed standalone load/unload/write-off changes the simulator's stock. */
+  private applyConfirmedToSim(op: KsOperation) {
+    if (!op.applyToSim || this.mode !== "mock" || !this.sim) return;
+    const fi = this.sim.model.fridges.findIndex((f) => f.id === op.fridgeId);
+    if (fi < 0) return;
+    for (const l of op.lines) {
+      const pi = this.sim.model.products.findIndex((p) => p.id === l.productId);
+      if (pi >= 0) this.sim.adjustStock(fi, pi, op.type === "LOAD" ? l.qty : -l.qty);
+    }
+    this.cache.clear();
   }
 
   // ───────────────────────── admin ─────────────────────────
@@ -658,6 +857,16 @@ class Runtime {
         for (const m of this.state.missions) if (dayNumber(m.createdAt) === sim.state.day) m.status = "EXPIRED";
         text = sim.resetDay();
         break;
+      case "ks-timeout":
+      case "ks-lost":
+      case "ks-reject":
+      case "ks-offline":
+      case "ks-slow": {
+        // fake KiT Shop only: the next operation answers with this scenario
+        const sc = ({ "ks-timeout": "timeout", "ks-lost": "lost", "ks-reject": "reject", "ks-offline": "unreachable", "ks-slow": "slow" } as const)[action];
+        mockAdapter().script.push(sc);
+        return `Тренировочный KiT Shop: следующая операция → ${sc}`;
+      }
       case "analyze":
         this.runHourlySync();
         this.save();
@@ -671,6 +880,9 @@ class Runtime {
           devices: this.state.devices,
           players: this.state.players,
           rewardClaims: this.state.rewardClaims,
+          operations: this.state.operations,
+          audit: this.state.audit,
+          productMappings: this.state.productMappings,
           fridgeSettings: this.state.fridgeSettings,
           travelOverrides: this.state.travelOverrides,
           settingsVersion: this.state.settingsVersion + 1,

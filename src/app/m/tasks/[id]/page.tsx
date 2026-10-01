@@ -6,6 +6,7 @@ import clsx from "clsx";
 import { useQueryClient } from "@tanstack/react-query";
 import { MobileShell } from "@/components/mobile/MobileShell";
 import { DishRow, SkeletonList, UrgencyPill, plural } from "@/components/mobile/ui";
+import { MissionKitShopStatus } from "@/components/mobile/ops";
 import { useMobileTask, type MobileRoute } from "@/lib/client/mobileApi";
 import type { CompletionImpact, MissionActionResult, XpGain } from "@/lib/client/api";
 import { clearProgress, loadProgress, saveProgress, sendOrQueue, type RouteProgress } from "@/lib/client/offline";
@@ -233,6 +234,7 @@ export default function TaskPage({ params }: { params: Promise<{ id: string }> }
       ) : (
         <div className="card mt-5 p-4 text-center text-[15px] text-ink-2">
           {r.status === "COMPLETED" ? "✓ Задача выполнена" : r.status === "SKIPPED" ? "Задача пропущена" : "Задача устарела — есть более свежий план"}
+          {r.status === "COMPLETED" && <MissionKitShopStatus missionId={r.id} />}
           {r.evaluation && (
             <div className="mt-2 text-[14px]">
               Продано {r.evaluation.lines.reduce((a, l) => a + l.soldAttributed, 0)} из {r.evaluation.lines.reduce((a, l) => a + l.moved, 0)} · {r.evaluation.result}
@@ -580,6 +582,7 @@ function Success({ r, result }: { r: MobileRoute; result: { xp: XpGain[]; impact
             </div>
           )}
           <p className="mt-4 text-[13px] text-ink-3">Через 2 часа система проверит, продались ли блюда. За хороший результат будут бонус и OPS POINTS.</p>
+          <MissionKitShopStatus missionId={r.id} />
         </>
       )}
 

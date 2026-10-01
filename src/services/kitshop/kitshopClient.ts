@@ -1,11 +1,14 @@
 import "server-only";
 import { z } from "zod";
 import { readKitShopConfig, type KitShopConfig } from "./config";
+import { KitShopTransport, kitshopDate, type KitShopEnvelope } from "./transport";
 import {
+  KitShopFillUpSchema,
   KitShopProductSchema,
   KitShopSaleSchema,
   KitShopShopSchema,
   KitShopStockSchema,
+  type KitShopFillUp,
   type KitShopProduct,
   type KitShopSale,
   type KitShopShop,
@@ -14,36 +17,32 @@ import {
 } from "./types";
 
 /**
- * READ-ONLY KitShop client.
+ * READ-ONLY KitShop client (methods documented in the official API v1.3 — see docs/KITSHOP_WRITE_API_AUDIT.md).
  *
  * Rules enforced by construction:
  *  • the only public methods are read methods (get*); there is no generic request() exposed;
- *  • every call goes through READ_ENDPOINTS, whose HTTP verb is typed as the literal "GET";
- *  • an endpoint must be explicitly `confirmed: true` (after reading real documentation)
- *    AND KITSHOP_ENABLED=true, otherwise the client refuses to send anything;
+ *  • every call goes through READ_ENDPOINTS — a whitelist of documented READ methods;
+ *  • KITSHOP_ENABLED=true is required, otherwise the client refuses to send anything;
  *  • credentials come from server env only and are never logged.
- *
- * There are intentionally NO methods like updateProduct / updateStock / deleteSale / updateShop.
+ * KiT Shop uses POST for every method (reads included); "read" is defined by the method name, not the verb.
+ * Writes live in a separate, gated module (writer.ts) — never here.
  */
 
 interface ReadEndpoint {
-  method: "GET";
   path: string;
-  /** Set to true only after the endpoint is confirmed by KitShop documentation. */
+  /** documented in the official API docs */
   confirmed: boolean;
   note: string;
 }
 
 export const READ_ENDPOINTS = {
-  salesByShops: {
-    method: "GET",
-    path: "/GetSalesbyShops",
-    confirmed: false,
-    note: "Существует в KitShop. Нужны: URL, параметры периода, пагинация, формат ответа, авторизация.",
-  },
-  shops: { method: "GET", path: "", confirmed: false, note: "Метод не известен — нужен справочник точек." },
-  products: { method: "GET", path: "", confirmed: false, note: "Метод не известен — нужен справочник товаров." },
-  stocks: { method: "GET", path: "", confirmed: false, note: "Метод не известен — нужны текущие остатки." },
+  checkAuth: { path: "CheckAuth", confirmed: true, note: "§3.1 проверка логина/подписи" },
+  shops: { path: "GetShops", confirmed: true, note: "§3.2 справочник торговых точек" },
+  products: { path: "GetProducts", confirmed: true, note: "§3.3 справочник товаров (Barcode, VendorCode)" },
+  stocks: { path: "GetShopStocks", confirmed: true, note: "§3.20 остатки одной торговой точки" },
+  sales: { path: "GetSales", confirmed: true, note: "§3.22 продажи без позиций (позиции — GetSaleById), период ≤ 60 дней" },
+  fillUps: { path: "GetFillUps", confirmed: true, note: "§3.19 загрузки/разгрузки, период ≤ 60 дней" },
+  fillUpById: { path: "GetFillUpById", confirmed: true, note: "§3.12 детали загрузки/разгрузки" },
 } as const satisfies Record<string, ReadEndpoint>;
 
 type EndpointName = keyof typeof READ_ENDPOINTS;
@@ -55,69 +54,80 @@ export class KitShopNotReadyError extends Error {
   }
 }
 
+export class KitShopResultError extends Error {
+  constructor(
+    public code: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "KitShopResultError";
+  }
+}
+
 export class KitShopReadOnlyClient {
   readonly #config: KitShopConfig;
+  readonly #transport: KitShopTransport;
 
-  constructor(config: KitShopConfig = readKitShopConfig()) {
+  constructor(config: KitShopConfig = readKitShopConfig(), transport?: KitShopTransport) {
     this.#config = config;
+    this.#transport = transport ?? new KitShopTransport(config);
   }
 
-  async getSalesByShops(query: SalesQuery): Promise<KitShopSale[]> {
-    const params: Record<string, string> = { from: query.from, to: query.to };
-    if (query.shopIds?.length) params.shopIds = query.shopIds.join(",");
-    return this.#read("salesByShops", params, z.array(KitShopSaleSchema));
+  async getAuthCheck(): Promise<boolean> {
+    await this.#read("checkAuth", {});
+    return true;
   }
 
   async getShops(): Promise<KitShopShop[]> {
-    return this.#read("shops", {}, z.array(KitShopShopSchema));
+    return this.#list("shops", {}, "Shops", KitShopShopSchema);
   }
 
   async getProducts(): Promise<KitShopProduct[]> {
-    return this.#read("products", {}, z.array(KitShopProductSchema));
+    return this.#list("products", {}, "Products", KitShopProductSchema);
   }
 
-  async getStocks(shopIds?: string[]): Promise<KitShopStock[]> {
-    return this.#read("stocks", shopIds?.length ? { shopIds: shopIds.join(",") } : {}, z.array(KitShopStockSchema));
+  /** Stock of ONE shop. ResultCode 100 = no stock / not tracked → empty list. */
+  async getShopStocks(shopId: string): Promise<KitShopStock[]> {
+    return this.#list("stocks", { Id: Number(shopId) }, "Stocks", KitShopStockSchema);
   }
 
-  /** Private: the single place that talks to the network. GET only. */
-  async #read<T>(name: EndpointName, params: Record<string, string>, schema: z.ZodType<T>): Promise<T> {
+  async getSales(q: SalesQuery): Promise<KitShopSale[]> {
+    return this.#list("sales", { Filter: this.#filter(q) }, "Sales", KitShopSaleSchema);
+  }
+
+  async getFillUps(q: SalesQuery): Promise<KitShopFillUp[]> {
+    return this.#list("fillUps", { Filter: this.#filter(q) }, "FillUps", KitShopFillUpSchema);
+  }
+
+  async getFillUpById(id: string): Promise<KitShopFillUp | null> {
+    return (await this.#list("fillUpById", { Id: Number(id) }, "FillUps", KitShopFillUpSchema))[0] ?? null;
+  }
+
+  #filter(q: SalesQuery) {
+    if (q.to - q.from > 60 * 86_400_000) throw new Error("KiT Shop: period must be ≤ 60 days");
+    return { UpDate: kitshopDate(q.from), ToDate: kitshopDate(q.to), ...(q.shopId ? { ShopId: Number(q.shopId) } : {}) };
+  }
+
+  async #list<T>(name: EndpointName, params: Record<string, unknown>, key: string, item: z.ZodType<T>): Promise<T[]> {
+    const env = await this.#read(name, params, true);
+    if (env.ResultCode === 100) return [];
+    return z.array(item).parse(env[key] ?? []);
+  }
+
+  /** Private: the single place that talks to the network. Whitelisted read methods only. */
+  async #read(name: EndpointName, params: Record<string, unknown>, allowEmpty = false): Promise<KitShopEnvelope> {
     const ep: ReadEndpoint = READ_ENDPOINTS[name];
     if (!this.#config.enabled) throw new KitShopNotReadyError("KitShop отключён (KITSHOP_ENABLED != true).");
-    if (!ep.confirmed || !ep.path) throw new KitShopNotReadyError(`Метод «${name}» не подтверждён документацией: ${ep.note}`);
-    if (!this.#config.baseUrl) throw new KitShopNotReadyError("Не задан KITSHOP_API_URL.");
-    if (ep.method !== "GET") throw new Error("Only GET requests are allowed to KitShop.");
-
-    const url = new URL(ep.path, this.#config.baseUrl);
-    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-    // Authentication scheme is not confirmed yet — it will be added here once documented.
-    const res = await this.#fetchWithRetry(url, { method: "GET", headers: { Accept: "application/json" }, cache: "no-store" });
-    if (!res.ok) throw new Error(`KitShop ${name}: HTTP ${res.status}`);
-    return schema.parse(await res.json());
-  }
-
-  async #fetchWithRetry(url: URL, init: RequestInit, attempts = 3): Promise<Response> {
-    let lastErr: unknown;
-    for (let i = 0; i < attempts; i++) {
-      try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 20_000);
-        const res = await fetch(url, { ...init, signal: controller.signal });
-        clearTimeout(timer);
-        if (res.status >= 500 || res.status === 429) throw new Error(`HTTP ${res.status}`);
-        return res;
-      } catch (e) {
-        lastErr = e;
-        await new Promise((r) => setTimeout(r, 500 * 2 ** i));
-      }
-    }
-    throw lastErr instanceof Error ? lastErr : new Error("KitShop request failed");
+    if (!ep.confirmed) throw new KitShopNotReadyError(`Метод «${name}» не подтверждён документацией: ${ep.note}`);
+    const env = await this.#transport.call(ep.path, params);
+    if (env.ResultCode === 0 || (allowEmpty && env.ResultCode === 100)) return env;
+    throw new KitShopResultError(env.ResultCode, `KitShop ${ep.path}: ${env.ErrorMessage ?? env.Response ?? "ошибка"} (код ${env.ResultCode})`);
   }
 }
 
 /** Guard used by tests / health check: the public surface must contain read methods only. */
 export function assertReadOnlySurface(): { ok: boolean; methods: string[] } {
   const methods = Object.getOwnPropertyNames(KitShopReadOnlyClient.prototype).filter((m) => m !== "constructor");
-  const forbidden = methods.filter((m) => /^(create|update|delete|remove|post|put|patch|set|write|insert|upsert)/i.test(m));
+  const forbidden = methods.filter((m) => /^(create|update|delete|remove|post|put|patch|set|write|insert|upsert|make|add|edit)/i.test(m));
   return { ok: forbidden.length === 0 && methods.every((m) => m.startsWith("get")), methods };
 }

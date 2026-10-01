@@ -1,6 +1,6 @@
 import type { CategoryId, HistoryCube, Product } from "@/lib/domain/types";
 import { CATEGORIES } from "@/lib/domain/categories";
-import type { KitShopProduct, KitShopSale } from "./types";
+import type { KitShopProduct } from "./types";
 
 /**
  * Maps KitShop DTOs to our domain. Pure functions — no network, no writes.
@@ -16,55 +16,45 @@ export const CATEGORY_RULES: { category: CategoryId; keywords: string[] }[] = [
   { category: "snack", keywords: ["перекус", "сэндвич", "ролл", "пирож", "хумус", "снек"] },
 ];
 
-export function categorize(p: Pick<KitShopProduct, "name" | "group">): CategoryId {
-  const text = `${p.group ?? ""} ${p.name}`.toLowerCase();
+export function categorize(name: string, group?: string | null): CategoryId {
+  const text = `${group ?? ""} ${name}`.toLowerCase();
   for (const rule of CATEGORY_RULES) if (rule.keywords.some((k) => text.includes(k))) return rule.category;
   return "snack";
 }
 
-export function toProduct(p: KitShopProduct): Product {
+export function toProduct(p: KitShopProduct, groupName?: string | null): Product {
   return {
-    id: `K${p.productId}`,
-    externalId: String(p.productId),
-    name: p.name,
-    categoryId: categorize(p),
-    price: p.price ?? 0,
-    // short code / photo / barcode — mapped once the real product fields are known
-    sku: typeof p.sku === "string" ? p.sku : String(p.productId).slice(-5),
-    imageUrl: typeof p.imageUrl === "string" ? p.imageUrl : null,
-    barcode: typeof p.barcode === "string" ? p.barcode : null,
+    id: `K${p.ProductId}`,
+    externalId: p.ProductId,
+    name: p.ProductName,
+    categoryId: categorize(p.ProductName, groupName),
+    price: p.Price ?? 0,
+    sku: p.VendorCode || p.ShortCodes || p.ProductId.slice(-5),
+    imageUrl: null,
+    barcode: p.Barcode || null,
   };
 }
 
-/**
- * Converts a KitShop timestamp to our wall-clock ms in the fridges' timezone.
- * If the string has no offset it is assumed to already be local wall-clock time.
- */
-export function toWallClock(iso: string, timeZone: string): number {
-  const hasOffset = /[zZ]|[+-]\d\d:?\d\d$/.test(iso);
-  if (!hasOffset) return Date.parse(`${iso}Z`);
-  const d = new Date(iso);
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
-  }).formatToParts(d);
-  const g = (t: string) => Number(parts.find((x) => x.type === t)?.value ?? 0);
-  return Date.UTC(g("year"), g("month") - 1, g("day"), g("hour"), g("minute"), g("second"));
+/** One sold product line (from sale details), already in our wall-clock time. */
+export interface SaleLine {
+  shopId: string;
+  productId: string;
+  quantity: number;
+  /** wall-clock ms */
+  soldAt: number;
 }
 
 /**
- * Aggregates raw sales into the history cube used by the engine.
+ * Aggregates sale lines into the history cube used by the engine.
  * Returns (quantity may be negative) are included as negative sales.
  */
 export function aggregateSales(
-  sales: KitShopSale[],
+  sales: SaleLine[],
   shopIndex: Map<string, number>,
   productIndex: Map<string, number>,
   products: Product[],
   startDay: number,
   days: number,
-  timeZone: string,
 ): HistoryCube {
   const F = shopIndex.size;
   const C = CATEGORIES.length;
@@ -73,13 +63,12 @@ export function aggregateSales(
   const productDaily = new Float32Array(F * P * days);
   const catIdx = new Map(CATEGORIES.map((c, i) => [c.id, i]));
   for (const s of sales) {
-    const f = shopIndex.get(String(s.shopId));
-    const p = productIndex.get(String(s.productId));
+    const f = shopIndex.get(s.shopId);
+    const p = productIndex.get(s.productId);
     if (f === undefined || p === undefined) continue;
-    const t = toWallClock(s.soldAt, timeZone);
-    const d = Math.floor(t / 86_400_000) - startDay;
+    const d = Math.floor(s.soldAt / 86_400_000) - startDay;
     if (d < 0 || d >= days) continue;
-    const h = new Date(t).getUTCHours();
+    const h = new Date(s.soldAt).getUTCHours();
     const c = catIdx.get(products[p].categoryId)!;
     hourly[((f * C + c) * days + d) * 24 + h] += s.quantity;
     productDaily[(f * P + p) * days + d] += s.quantity;

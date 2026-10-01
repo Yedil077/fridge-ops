@@ -2,8 +2,14 @@
 
 ## Главные правила
 
-1. **KitShop — только чтение.** В клиенте KitShop есть только `get*`-методы, HTTP-метод жёстко `GET`, запросы невозможны без
-   `KITSHOP_ENABLED=true` и подтверждённого документацией эндпоинта. Проверяется тестом `tests/security.test.ts` в CI.
+1. **KitShop: чтение — отдельно, запись — за шлюзом.** Read-клиент (`src/services/kitshop/kitshopClient.ts`) содержит только `get*`-методы
+   из белого списка документированных методов (официальная API v1.3: все методы POST, подпись MD5 в теле). Запись
+   (загрузка/разгрузка/списание через `MakeFillUp`, создание товара `AddProduct`) — только в `writer.ts` и только когда
+   `KITSHOP_ENABLED=true`, `KITSHOP_WRITE_ENABLED=true`, `KITSHOP_WRITE_DRY_RUN=false` **и** точка в `KITSHOP_WRITE_SHOPS`.
+   По умолчанию запись выключена; иначе — тренировочный KiT Shop (mock) или dry-run (только журнал).
+   Удаление товаров, удаление из товарной базы и команды терминалу/замкам (`AddCommand`) в коде отсутствуют.
+   Идемпотентность — `operation_uuid`; потерянный ответ → UNKNOWN и проверка чтением, без автоповтора. Каждая запись — в audit log.
+   Подробно: `docs/KITSHOP_WRITE_API_AUDIT.md`. Проверяется тестами `tests/security.test.ts`, `tests/kitshopOps.test.ts` в CI.
 2. **Секреты только на сервере.** Логин/пароль KitShop, пароль базы, `AUTH_SECRET` живут в `.env.production` на сервере.
    Их нет во фронтенде, в APK, в localStorage и в git (`.gitignore` + тест).
 3. **Правильный путь данных:** `Android/браузер → Fridge Ops backend → KitShop (READ ONLY)`. Телефон никогда не обращается к KitShop.

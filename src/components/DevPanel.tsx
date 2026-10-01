@@ -16,6 +16,11 @@ const ACTIONS: { id: string; label: string; hint: string; tone?: "danger" }[] = 
   { id: "overstock", label: "CREATE OVERSTOCK", hint: "+14 шт. непопулярной категории" },
   { id: "anomaly", label: "DEMAND ANOMALY", hint: "Спрос ×1.9 в одной точке" },
   { id: "analyze", label: "RUN ANALYSIS", hint: "Пересчитать миссии сейчас" },
+  { id: "ks-slow", label: "KS: SLOW 5s", hint: "Следующая операция подтвердится через 5 секунд" },
+  { id: "ks-timeout", label: "KS: TIMEOUT", hint: "Тренировочный KiT Shop не ответит на следующую операцию" },
+  { id: "ks-lost", label: "KS: LOST ANSWER", hint: "Следующая операция пройдёт, но ответ потеряется" },
+  { id: "ks-reject", label: "KS: ERROR", hint: "Следующая операция будет отклонена" },
+  { id: "ks-offline", label: "KS: OFFLINE", hint: "Следующая операция: KiT Shop недоступен" },
   { id: "reset-day", label: "RESET DAY", hint: "Вернуть день к утру", tone: "danger" },
   { id: "reseed", label: "NEW WORLD", hint: "Новые данные (seed)", tone: "danger" },
 ];

@@ -33,6 +33,10 @@ export default function MobileHomePage() {
         <Count dot="🔴" n={data.counts.critical} label="срочно" tone={data.counts.critical > 0} />
       </section>
 
+      <Link href="/m/scan" className="mt-3 flex h-14 items-center justify-center gap-2 rounded-2xl border border-line-strong bg-surface-2 text-[16px] font-bold active:bg-surface-3">
+        📷 СКАНИРОВАТЬ · загрузка / разгрузка
+      </Link>
+
       {alert && (
         <Link
           href={alert.missionId ? `/m/tasks/${alert.missionId}` : "/m/fridges"}

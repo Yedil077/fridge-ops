@@ -7,6 +7,7 @@ import type { Role } from "../store/appStore";
 import { getRuntime, HttpError } from "./runtime";
 import { AuthError, ROLE_RANK, validate, type SessionUser } from "./users";
 import { KitShopNotReadyError } from "@/services/kitshop";
+import { isOpsError } from "../kitshop-ops/service";
 
 /**
  * Authenticated user of the request, checked against the session table in OUR database
@@ -36,6 +37,7 @@ export function handle<T extends unknown[]>(fn: (...args: T) => Promise<unknown>
     } catch (e) {
       if (e instanceof HttpError || e instanceof AuthError) return NextResponse.json({ error: e.message }, { status: e.status });
       if (e instanceof ZodError) return NextResponse.json({ error: "Некорректный запрос", issues: e.issues }, { status: 400 });
+      if (isOpsError(e)) return NextResponse.json({ error: e.message, code: e.code, details: e.details ?? null }, { status: e.status });
       if (e instanceof KitShopNotReadyError) return NextResponse.json({ error: e.message, code: "KITSHOP_NOT_READY" }, { status: 503 });
       console.error(e);
       return NextResponse.json({ error: "Внутренняя ошибка" }, { status: 500 });

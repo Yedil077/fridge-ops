@@ -269,11 +269,13 @@ pairStats(s→t, c) += moved, sold
 
 ## 8. KitShop API: безопасность и требования
 
-См. `docs/KITSHOP_API_REQUIREMENTS.md`. Кратко:
-- клиент в `src/services/kitshop` содержит только read-методы (`getSalesByShops`, `getShops`, `getProducts`, `getStocks`);
-- вызовы выполняются только на сервере, credentials — только из env;
-- HTTP-метод каждого вызова зашит в белый список; универсального `request()` наружу нет;
-- без `KITSHOP_ENABLED=true` и подтверждённой документации запросы не выполняются.
+См. `docs/KITSHOP_WRITE_API_AUDIT.md` (официальная API v1.3) и `docs/KITSHOP_API_REQUIREMENTS.md`. Кратко:
+- транспорт `src/services/kitshop/transport.ts`: POST + `Auth{CompanyId, RequestId, UserLogin, Sign=MD5}`, строго растущий RequestId, запросы по одному;
+- read-клиент `kitshopClient.ts` — только `get*` из белого списка (`GetShops`, `GetProducts`, `GetShopStocks`, `GetSales`, `GetFillUps`, `GetFillUpById`);
+- запись — `src/lib/kitshop-ops` (журнал операций, статусы DRAFT…WAITING_FOR_CONNECTION, идемпотентность по `operation_uuid`,
+  перенос = разгрузка источника + загрузка цели) и адаптеры: mock (по умолчанию), dry-run, live (`writer.ts`, только за шлюзом флагов);
+- сопоставление товаров: id → штрихкод → артикул; название — только подсказка (`mapping.ts`);
+- вызовы выполняются только на сервере, credentials — только из env.
 
 ## 9. Риски и edge cases
 

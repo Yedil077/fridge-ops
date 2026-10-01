@@ -11,6 +11,7 @@ import { LiveClock } from "@/components/LiveClock";
 const NAV = [
   { href: "/", label: "Command Center", short: "Center", role: "MANAGER" as const },
   { href: "/analytics", label: "Analytics", short: "Analytics", role: "ADMIN" as const },
+  { href: "/admin/products", label: "Товары", short: "🏷", role: "ADMIN" as const },
   { href: "/admin", label: "Настройки", short: "⚙️", role: "ADMIN" as const },
 ];
 
@@ -37,7 +38,7 @@ export function Shell({
           </Link>
           <nav className="flex items-center gap-1">
             {NAV.filter((n) => atLeast(me, n.role)).map((n) => {
-              const active = n.href === "/" ? path === "/" : path.startsWith(n.href);
+              const active = n.href === "/" || n.href === "/admin" ? path === n.href : path.startsWith(n.href);
               return (
                 <Link
                   key={n.href}

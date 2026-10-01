@@ -28,7 +28,7 @@ export function kitShopDiagnostics() {
     readOnlySurface: assertReadOnlySurface(),
     endpoints: Object.entries(READ_ENDPOINTS).map(([name, ep]) => ({
       name,
-      method: ep.method,
+      method: `POST ${ep.path}`,
       confirmed: ep.confirmed,
       note: ep.note,
     })),

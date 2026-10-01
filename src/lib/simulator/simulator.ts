@@ -295,6 +295,16 @@ export class Simulator {
     return moved;
   }
 
+  /** MOCK only: a confirmed load (+) / unload or write-off (−) from the fake KiT Shop. Never below 0. */
+  adjustStock(f: number, productIndex: number, delta: number): number {
+    const i = f * this.P + productIndex;
+    const next = Math.max(0, this.state.stock[i] + Math.round(delta));
+    const applied = next - this.state.stock[i];
+    this.state.stock[i] = next;
+    this.touch();
+    return applied;
+  }
+
   // ───────────────────────── dev panel actions ─────────────────────────
 
   private openFridges(): number[] {
