@@ -8,6 +8,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { atLeast, logout, useMe } from "@/lib/client/api";
 import { flushOutbox, outboxSize } from "@/lib/client/offline";
 import { LiveClock } from "@/components/LiveClock";
+import { DataSourceBadge } from "@/components/DataSourceBadge";
 
 const TABS = [
   { href: "/m", label: "Сегодня", icon: "🏠" },
@@ -73,6 +74,9 @@ export function MobileShell({ children, now, title, back }: { children: ReactNod
           <button onClick={() => setMenu(!menu)} className="grid h-11 w-11 place-items-center rounded-xl text-[20px] text-ink-2 active:bg-surface-2" aria-label="Меню">
             ⋯
           </button>
+        </div>
+        <div className="flex justify-end px-4 pb-1.5">
+          <DataSourceBadge />
         </div>
         {(!online || pending > 0) && (
           <div className={clsx("px-4 py-2 text-[13px]", online ? "bg-accent/15 text-accent" : "bg-warn/15 text-warn")}>

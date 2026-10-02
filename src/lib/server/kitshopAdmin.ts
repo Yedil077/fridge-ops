@@ -4,6 +4,17 @@ import { summarize, WriteTest, type KitShopAdminState } from "../kitshop-ops/wri
 import { OPEN_STATUSES } from "../kitshop-ops/types";
 import { adapterFor, kitshopReader, kitshopServerInfo, kitshopTransport } from "./kitshopWrite";
 import { HttpError, type Runtime } from "./runtime";
+import { REAL_API_HOST, runRealDiagnostic } from "@/services/kitshop/realDiagnostic";
+export type { RealDiagnosticReport, StepResult as RealStep, StepStatus } from "@/services/kitshop/realDiagnostic";
+import { wallClockNow } from "../time";
+import { ARCHETYPES } from "../simulator/archetypes";
+
+/** Our fridges' KiT Shop ids & names — from the live snapshot, or the static list when the data source is down. */
+export async function ourFridges(rt: Runtime): Promise<{ id: string; name: string; shopId: string | null }[]> {
+  const snap = await rt.snapshot().catch(() => null);
+  if (snap) return snap.fridges.map((f) => ({ id: f.id, name: f.name, shopId: /^\d+$/.test(f.externalId) ? f.externalId : null }));
+  return ARCHETYPES.map((a) => ({ id: `F${a.code}`, name: a.name ?? a.code, shopId: a.kitshopId ?? null }));
+}
 
 /**
  * /admin/kitshop/diagnostics — Phase D tooling. Everything here is READ-ONLY towards KiT Shop,
@@ -61,15 +72,57 @@ export function writeTest(rt: Runtime): WriteTest {
   });
 }
 
+/**
+ * Which KiT Shop this page talks to. REAL only when the configured host is api.kitshop.ru and reads are allowed
+ * (KITSHOP_ENABLED or KITSHOP_REAL_DIAGNOSTICS). Anything else — including a local fake — is MOCK.
+ */
+export function kitshopTarget() {
+  const s = kitshopServerInfo();
+  let host = "";
+  try {
+    host = new URL(s.config.baseUrl).hostname;
+  } catch {
+    /* invalid URL → not real */
+  }
+  const realDiagnostics = process.env.KITSHOP_REAL_DIAGNOSTICS === "true";
+  const real = host === REAL_API_HOST && (s.config.enabled || realDiagnostics);
+  return { label: real ? "REAL KITSHOP" : "MOCK KITSHOP", real, host: host || "(не задан)", realDiagnostics, readEnabled: s.config.enabled };
+}
+
+/** REAL API TEST — read-only connectivity diagnostic through the app's own transport. Never mock, never a write. */
+export async function runRealApiTest(rt: Runtime, user: string) {
+  const s = kitshopServerInfo();
+  const target = kitshopTarget();
+  if (!target.realDiagnostics && !s.config.enabled)
+    throw new HttpError(409, "Реальная диагностика выключена: задайте KITSHOP_REAL_DIAGNOSTICS=true (только чтение) в настройках сервера");
+  const fridges = await ourFridges(rt);
+  const st = adminState(rt);
+  const report = await runRealDiagnostic({
+    config: s.config,
+    transport: kitshopTransport(), // one RequestId sequence with the rest of the app
+    knownShopIds: fridges.map((f) => f.shopId).filter((id): id is string => !!id),
+    testShopId: process.env.KITSHOP_TEST_SHOP_ID || st.testShop?.shopId || undefined,
+    now: () => wallClockNow(process.env.APP_TIMEZONE || "Asia/Almaty"),
+  });
+  st.realDiagnostic = report;
+  rt.ops.audit(user, "kitshop.real_diagnostic", "kitshop", "diagnostic", { summary: report.summary, failingStep: report.failingStep, category: report.failingCategory });
+  rt.save();
+  return report;
+}
+
 export async function diagnostics(rt: Runtime) {
   const s = kitshopServerInfo();
   const st = adminState(rt);
   const ops = rt.state.operations;
   const writeMode = !s.gate.writeEnabled ? "DISABLED" : s.liveOpen ? "LIMITED PRODUCTION" : "DRY RUN";
-  const snap = await rt.snapshot();
+  const fridges = await ourFridges(rt);
   const call = (m: string) => s.calls.get(m) ?? null;
+  const real = st.realDiagnostic ?? null;
   return {
-    connection: !s.config.enabled ? "DISABLED" : s.lastOk && (!s.lastError || s.lastOk.at >= s.lastError.at) ? "CONNECTED" : s.lastError ? "ERROR" : "NOT CHECKED",
+    target: kitshopTarget(),
+    // no generic "CONNECTED": only the result of the last REAL API TEST, step by step
+    connection: !real ? "REAL API TEST не запускался" : real.failingStep ? `FAIL: ${real.failingStep}${real.failingCategory ? ` [${real.failingCategory}]` : ""}` : "REAL API TEST: PASS",
+    realTest: real,
     readEnabled: s.config.enabled,
     companyId: s.config.companyId ? mask(s.config.companyId) : null,
     apiUser: s.config.login && s.config.password ? "configured" : "missing",
@@ -83,7 +136,7 @@ export async function diagnostics(rt: Runtime) {
     writeEnabledEnv: s.gate.writeEnabled,
     dryRunEnv: s.gate.dryRun,
     scope: s.scope,
-    allowedShops: s.gate.shops.map((id) => ({ shopId: id, name: snap.fridges.find((f) => f.externalId === id)?.name ?? null })),
+    allowedShops: s.gate.shops.map((id) => ({ shopId: id, name: fridges.find((f) => f.shopId === id)?.name ?? null })),
     timeoutMs: s.gate.timeoutMs,
     paused: { on: st.writesPaused, by: st.pausedBy, at: st.pausedAt },
     counts: {
@@ -92,7 +145,7 @@ export async function diagnostics(rt: Runtime) {
       failed: ops.filter((o) => o.status === "FAILED").length,
       open: ops.filter((o) => OPEN_STATUSES.includes(o.status)).length,
     },
-    fridges: snap.fridges.map((f) => ({ id: f.id, name: f.name, shopId: /^\d+$/.test(f.externalId) ? f.externalId : null })),
+    fridges,
     testShop: st.testShop,
     testProduct: st.testProduct,
     liveBlocked: st.testShop ? liveBlocked(st.testShop.shopId) : "не выбрана тестовая точка",

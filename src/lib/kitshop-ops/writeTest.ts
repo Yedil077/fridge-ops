@@ -1,5 +1,6 @@
 import { fillUpNotes, OpsError, type SubmitInput } from "./service";
 import type { AuditEntry, KsOperation, OpStatus, VerifyOutcome } from "./types";
+import type { RealDiagnosticReport } from "../../services/kitshop/realDiagnostic";
 
 /**
  * PHASE D — REAL WRITE TEST on ONE test shop and ONE test product (docs/KITSHOP_WRITE_API_AUDIT.md §5).
@@ -74,6 +75,8 @@ export interface KitShopAdminState {
   testShop: TestShop | null;
   testProduct: TestProduct | null;
   writeTest: WriteTestRun | null;
+  /** last REAL API TEST (read-only connectivity diagnostic) — never mock data */
+  realDiagnostic?: RealDiagnosticReport | null;
 }
 
 export interface WriteTestDeps {

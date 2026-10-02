@@ -16,7 +16,7 @@ export class KitShopDataSource {
 
   async snapshot(): Promise<NetworkSnapshot> {
     throw new KitShopNotReadyError(
-      "KitShop-адаптер ещё не подключён: нужна подтверждённая документация API (см. docs/KITSHOP_API_REQUIREMENTS.md). Используйте DATA_SOURCE=mock.",
+      "REAL KITSHOP UNAVAILABLE: источник данных KiT Shop ещё не подключён к прогнозу (DATA_SOURCE=kitshop). Данные симулятора НЕ подставляются. Проверка связи — /admin/kitshop/diagnostics → REAL API TEST.",
     );
   }
 }

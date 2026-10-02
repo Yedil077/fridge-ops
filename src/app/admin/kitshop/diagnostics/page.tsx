@@ -7,6 +7,7 @@ import { Shell } from "@/components/Shell";
 import { api } from "@/lib/client/api";
 import type { diagnostics } from "@/lib/server/kitshopAdmin";
 import type { StepResult, TestLeg } from "@/lib/kitshop-ops/writeTest";
+import type { RealDiagnosticReport, RealStep, StepStatus } from "@/lib/server/kitshopAdmin";
 
 type Diag = Awaited<ReturnType<typeof diagnostics>>;
 interface Check {
@@ -70,6 +71,15 @@ export default function KitShopDiagnosticsPage() {
   return (
     <Shell>
       <div className="mx-auto max-w-5xl space-y-5 px-4 py-6">
+        <div
+          className={clsx(
+            "rounded-xl px-4 py-2 text-center text-[15px] font-extrabold tracking-[0.2em] text-white",
+            d.target.real ? "bg-crit" : "bg-surface-3 text-ink",
+          )}
+        >
+          {d.target.label}
+          <span className="ml-2 text-[11px] font-semibold tracking-normal opacity-80">· host {d.target.host}</span>
+        </div>
         <div>
           <h1 className="text-[22px] font-bold">KiT Shop · диагностика и Phase D</h1>
           <p className="mt-1 text-[13px] text-ink-3">Пароли и подписи не показываются. Право на запись задаётся только настройками сервера.</p>
@@ -78,7 +88,7 @@ export default function KitShopDiagnosticsPage() {
 
         {/* ── status ── */}
         <section className="grid grid-cols-2 gap-2 md:grid-cols-4">
-          <Tile label="KiT Shop connection" value={d.connection} tone={d.connection === "CONNECTED" ? "good" : d.connection === "ERROR" ? "bad" : undefined} />
+          <Tile label="Последний REAL API TEST" value={d.connection} tone={d.realTest ? (d.realTest.failingStep ? "bad" : "good") : undefined} small />
           <Tile label="Company ID" value={d.companyId ?? "missing"} tone={d.companyId ? undefined : "bad"} />
           <Tile label="API user" value={d.apiUser} tone={d.apiUser === "configured" ? undefined : "bad"} />
           <Tile label="Write mode" value={d.paused.on ? `${d.writeMode} · PAUSED` : d.writeMode} tone={d.paused.on ? "bad" : d.writeMode === "LIMITED PRODUCTION" ? "warn" : undefined} />
@@ -91,6 +101,8 @@ export default function KitShopDiagnosticsPage() {
           <Tile label="Failed operations" value={String(d.counts.failed)} tone={d.counts.failed ? "warn" : undefined} />
           <Tile label="Last error" value={d.lastError ? `${fmt(d.lastError.at)} · ${d.lastError.method}: ${d.lastError.error ?? d.lastError.resultCode}` : "—"} small />
         </section>
+
+        <RealApiTest d={d} busy={busy} run={() => post("real", { action: "real-test" })} />
 
         {/* ── switches ── */}
         <Card title="KITSHOP WRITE">
@@ -365,5 +377,132 @@ function Tile({ label, value, tone, small }: { label: string; value: string; ton
         {value}
       </div>
     </div>
+  );
+}
+
+// ───────────────────────── REAL API TEST ─────────────────────────
+
+const REAL_TONE: Record<StepStatus, string> = { PASS: "text-good-ink", FAIL: "text-crit-ink", WARN: "text-warn", NOT_TESTED: "text-ink-3" };
+const REAL_LABEL: Record<StepStatus, string> = { PASS: "PASS", FAIL: "FAIL", WARN: "WARN", NOT_TESTED: "NOT TESTED" };
+
+/** Five independent steps — never one generic "connected". Read-only; never mock data. */
+function RealApiTest({ d, busy, run }: { d: Diag; busy: string | null; run: () => void }) {
+  const r: RealDiagnosticReport | null = d.realTest;
+  const byId = (id: RealStep["id"]) => r?.steps.find((x) => x.id === id);
+  const status = (id: RealStep["id"]): StepStatus => byId(id)?.status ?? "NOT_TESTED";
+  // HTTPS also fails when the endpoint itself does not answer as KiT Shop
+  const https: StepStatus = status("https") === "FAIL" || status("endpoint") === "FAIL" ? "FAIL" : status("https");
+  const chips: [string, StepStatus][] = [
+    ["HTTPS", r ? https : "NOT_TESTED"],
+    ["AUTH", status("auth")],
+    ["SHOPS", status("shops")],
+    ["STOCKS", status("stocks")],
+    ["SALES", status("sales")],
+  ];
+  return (
+    <section className={clsx("card p-4", d.target.real && "border-crit/50")}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="label">REAL API TEST · только чтение</div>
+        <button
+          onClick={run}
+          disabled={!!busy || (!d.target.realDiagnostics && !d.target.readEnabled)}
+          className="h-10 rounded-lg bg-crit/25 px-4 text-[13px] font-semibold text-crit-ink disabled:opacity-40"
+        >
+          {busy === "real" ? "Проверяем…" : "ЗАПУСТИТЬ REAL API TEST"}
+        </button>
+      </div>
+      <p className="mt-1 text-[12px] text-ink-3">
+        CheckAuth → GetShops → GetShopStocks (одна точка) → GetSales (последний час). Через тот же клиент, что и приложение. Никаких записей, никаких данных симулятора.
+        {!d.target.realDiagnostics && !d.target.readEnabled && " Выключено: задайте REAL_DIAGNOSTICS=true в переменных сервера."}
+      </p>
+      <div className="mt-3 grid grid-cols-5 gap-2">
+        {chips.map(([label, st]) => (
+          <div key={label} className="rounded-lg bg-surface-2 px-2 py-2 text-center">
+            <div className="text-[11px] text-ink-3">{label}</div>
+            <div className={clsx("text-[13px] font-bold", REAL_TONE[st])}>{REAL_LABEL[st]}</div>
+          </div>
+        ))}
+      </div>
+      {r && (
+        <>
+          <div className="mt-4 grid gap-4 md:grid-cols-2">
+            <dl className="grid grid-cols-[150px_1fr] gap-x-3 gap-y-1 text-[13px]">
+              <dt className="text-ink-3">Environment</dt>
+              <dd>{r.environment}</dd>
+              <dt className="text-ink-3">API host</dt>
+              <dd className={r.realHost ? "" : "text-warn"}>{r.apiHost}{r.realHost ? "" : " (НЕ настоящий KiT Shop)"}</dd>
+              <dt className="text-ink-3">Проверено</dt>
+              <dd>{fmt(r.at)}</dd>
+              <dt className="text-ink-3">Sign принят</dt>
+              <dd>{r.signCaseAccepted ?? "—"}</dd>
+            </dl>
+            <dl className="grid grid-cols-[150px_1fr] gap-x-3 gap-y-1 text-[13px]">
+              {(
+                [
+                  ["Transport", r.summary.transport],
+                  ["Authentication", r.summary.authentication],
+                  ["API permission", r.summary.permission],
+                  ["Company", r.summary.company],
+                  ["Shops", r.summary.shops],
+                  ["Stocks", r.summary.stocks],
+                  ["Sales", r.summary.sales],
+                ] as [string, StepStatus][]
+              ).map(([k, v]) => (
+                <div key={k} className="contents">
+                  <dt className="text-ink-3">{k}</dt>
+                  <dd className={clsx("font-semibold", REAL_TONE[v])}>{REAL_LABEL[v]}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+          {r.failingStep ? (
+            <div className="mt-3 rounded-lg border border-crit/50 bg-crit/10 px-3 py-2 text-[13px]">
+              <b className="text-crit-ink">REAL KITSHOP UNAVAILABLE</b> — падает шаг «{r.failingStep}»{r.failingCategory ? `, категория ${r.failingCategory}` : ""}.
+            </div>
+          ) : (
+            <div className="mt-3 rounded-lg border border-good/50 bg-good/10 px-3 py-2 text-[13px] text-good-ink">Все шаги прошли на реальном KiT Shop.</div>
+          )}
+          <div className="mt-4 space-y-2">
+            {r.steps.map((st) => (
+              <details key={st.id} className="rounded-lg bg-surface-2 px-3 py-2" open={st.status === "FAIL"}>
+                <summary className="cursor-pointer text-[13px]">
+                  <span className={clsx("mr-2 font-bold", REAL_TONE[st.status])}>{REAL_LABEL[st.status]}</span>
+                  {st.title}
+                  {st.category && <span className="ml-2 rounded bg-crit/20 px-1.5 text-[11px] text-crit-ink">{st.category}</span>}
+                  {st.ms !== null && <span className="ml-2 text-ink-3">{st.ms} ms</span>}
+                  {st.message && <span className="ml-2 text-ink-3">— {st.message}</span>}
+                </summary>
+                <dl className="mt-2 grid grid-cols-[170px_1fr] gap-x-3 gap-y-0.5 text-[12px]">
+                  {Object.entries(st.details)
+                    .filter(([, v]) => v !== null && v !== "")
+                    .map(([k, v]) => (
+                      <div key={k} className="contents">
+                        <dt className="text-ink-3">{k}</dt>
+                        <dd className="break-all font-mono">{String(v)}</dd>
+                      </div>
+                    ))}
+                </dl>
+                {st.rows && st.rows.length > 0 && (
+                  <table className="mt-2 w-full text-[12px]">
+                    <tbody>
+                      {st.rows.map((row, i) => (
+                        <tr key={i} className="border-t border-line">
+                          {Object.entries(row).map(([k, v]) => (
+                            <td key={k} className="py-1 pr-3 font-mono">
+                              <span className="text-ink-3">{k}=</span>
+                              {String(v)}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </details>
+            ))}
+          </div>
+        </>
+      )}
+    </section>
   );
 }

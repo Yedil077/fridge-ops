@@ -22,8 +22,11 @@ export interface KitShopEnvelope {
   [k: string]: unknown;
 }
 
-/** Why a call did not produce an answer. "unreachable" = provably never sent (safe to send again). */
-export type TransportFailure = "unreachable" | "timeout" | "lost" | "http";
+/**
+ * Why a call did not produce an answer. "unreachable" = provably never sent (safe to send again).
+ * "malformed" = HTTP answer arrived but is not a KiT Shop JSON envelope (e.g. an HTML error page).
+ */
+export type TransportFailure = "unreachable" | "timeout" | "lost" | "http" | "malformed";
 
 export class KitShopTransportError extends Error {
   constructor(
@@ -60,6 +63,8 @@ export function signRequest(companyId: string | number, password: string, reques
 }
 
 /** Outcome of every call — for the diagnostics page (no bodies, no credentials). */
+type MetaKeys = "requestId" | "previousRequestId" | "signCase" | "signLength" | "httpStatus" | "contentType";
+
 export interface CallRecord {
   method: string;
   at: number;
@@ -67,6 +72,14 @@ export interface CallRecord {
   ok: boolean;
   resultCode: number | null;
   error: string | null;
+  /** diagnostics only — never the password, the Sign value or the signing string */
+  requestId: number | null;
+  previousRequestId: number | null;
+  signCase: "lower" | "upper";
+  signLength: number | null;
+  httpStatus: number | null;
+  contentType: string | null;
+  failure: TransportFailure | null;
 }
 
 /** dd.MM.yyyy HH:mm:ss from our wall-clock ms (UTC fields = local time). */
@@ -94,6 +107,18 @@ export class KitShopTransport {
   readonly #nextRequestId: () => number;
   readonly #onCall?: (r: CallRecord) => void;
   #queue: Promise<unknown> = Promise.resolve();
+  #lastRequestId: number | null = null;
+  /** details of the exchange in progress (filled by #send, reported through onCall / lastCall) */
+  #meta: Pick<CallRecord, MetaKeys> = {
+    requestId: null,
+    previousRequestId: null,
+    signCase: "lower",
+    signLength: null,
+    httpStatus: null,
+    contentType: null,
+  };
+  /** the last finished call (diagnostics) */
+  lastCall: CallRecord | null = null;
   /** Sign in upper case (KITSHOP_SIGN_CASE=upper); can be switched by the diagnostics after a CheckAuth probe */
   signUpper: boolean;
 
@@ -112,12 +137,21 @@ export class KitShopTransport {
   call(method: string, params: Record<string, unknown>, timeoutMs = 20_000, opts: { signUpper?: boolean } = {}): Promise<KitShopEnvelope> {
     const run = this.#queue.then(async () => {
       const t0 = Date.now();
+      const record = (r: Omit<CallRecord, MetaKeys | "method" | "at" | "ms">) => {
+        this.lastCall = { method, at: t0, ms: Date.now() - t0, ...this.#meta, ...r };
+        this.#onCall?.(this.lastCall);
+      };
       try {
         const env = await this.#send(method, params, timeoutMs, opts.signUpper ?? this.signUpper);
-        this.#onCall?.({ method, at: t0, ms: Date.now() - t0, ok: env.ResultCode === 0 || env.ResultCode === 100, resultCode: env.ResultCode, error: env.ResultCode === 0 ? null : (env.ErrorMessage ?? env.Response ?? null) });
+        record({
+          ok: env.ResultCode === 0 || env.ResultCode === 100,
+          resultCode: env.ResultCode,
+          error: env.ResultCode === 0 ? null : (env.ErrorMessage ?? env.Response ?? null),
+          failure: null,
+        });
         return env;
       } catch (e) {
-        this.#onCall?.({ method, at: t0, ms: Date.now() - t0, ok: false, resultCode: null, error: e instanceof Error ? e.message : "error" });
+        record({ ok: false, resultCode: null, error: e instanceof Error ? e.message : "error", failure: e instanceof KitShopTransportError ? e.kind : "lost" });
         throw e;
       }
     });
@@ -127,10 +161,15 @@ export class KitShopTransport {
 
   async #send(method: string, params: Record<string, unknown>, timeoutMs: number, signUpper: boolean): Promise<KitShopEnvelope> {
     const c = this.#config;
+    this.#meta = { requestId: null, previousRequestId: this.#lastRequestId, signCase: signUpper ? "upper" : "lower", signLength: null, httpStatus: null, contentType: null };
     if (!c.companyId || !c.login || !c.password) throw new KitShopTransportError("unreachable", "KiT Shop credentials are not configured");
     const requestId = this.#nextRequestId();
+    const sign = signRequest(c.companyId, c.password, requestId, signUpper);
+    this.#meta.requestId = requestId;
+    this.#meta.signLength = sign.length;
+    this.#lastRequestId = requestId;
     const body = {
-      Auth: { CompanyId: Number(c.companyId), RequestId: requestId, UserLogin: c.login, Sign: signRequest(c.companyId, c.password, requestId, signUpper) },
+      Auth: { CompanyId: Number(c.companyId), RequestId: requestId, UserLogin: c.login, Sign: sign },
       ...params,
     };
     const base = (c.baseUrl || DEFAULT_BASE_URL).replace(/\/+$/, "");
@@ -152,10 +191,23 @@ export class KitShopTransport {
       if (controller.signal.aborted) throw new KitShopTransportError("timeout", `KiT Shop ${method}: no answer in ${timeoutMs} ms`);
       throw new KitShopTransportError("lost", `KiT Shop ${method}: connection lost`);
     }
+    this.#meta.httpStatus = res.status;
+    this.#meta.contentType = res.headers.get("content-type");
     try {
       if (!res.ok) throw new KitShopTransportError("http", `KiT Shop ${method}: HTTP ${res.status}`, res.status);
-      const json = (await res.json()) as KitShopEnvelope;
-      if (typeof json?.ResultCode !== "number") throw new KitShopTransportError("lost", `KiT Shop ${method}: malformed answer`);
+      let text: string;
+      try {
+        text = await res.text();
+      } catch {
+        throw new KitShopTransportError(controller.signal.aborted ? "timeout" : "lost", `KiT Shop ${method}: answer not received completely`);
+      }
+      let json: KitShopEnvelope;
+      try {
+        json = JSON.parse(text.replace(/^\uFEFF/, "")) as KitShopEnvelope;
+      } catch {
+        throw new KitShopTransportError("malformed", `KiT Shop ${method}: answer is not JSON (${this.#meta.contentType ?? "no content-type"})`);
+      }
+      if (typeof json?.ResultCode !== "number") throw new KitShopTransportError("malformed", `KiT Shop ${method}: JSON without ResultCode`);
       return json;
     } catch (e) {
       if (e instanceof KitShopTransportError) throw e;

@@ -7,6 +7,7 @@ import clsx from "clsx";
 import { atLeast, logout, useMe } from "@/lib/client/api";
 import { fmtDay } from "@/lib/client/format";
 import { LiveClock } from "@/components/LiveClock";
+import { DataSourceBadge } from "@/components/DataSourceBadge";
 
 const NAV = [
   { href: "/", label: "Command Center", short: "Center", role: "MANAGER" as const },
@@ -56,9 +57,10 @@ export function Shell({
             })}
           </nav>
           <div className="ml-auto flex items-center gap-3">
+            <DataSourceBadge className="hidden md:inline" />
             {now !== undefined && (
               <div className="flex items-center gap-2 whitespace-nowrap rounded-md border border-line bg-surface px-2.5 py-1 text-[12px]">
-                {mode === "mock" && <span className="rounded bg-accent/15 px-1.5 py-px text-[10px] font-semibold tracking-wider text-accent">SIM</span>}
+                {mode === "mock" && <span className="rounded bg-accent/15 px-1.5 py-px text-[10px] font-semibold tracking-wider text-accent md:hidden">SIM</span>}
                 <span className="hidden text-ink-3 sm:inline">{fmtDay(now)}</span>
                 <LiveClock serverNow={now} className="num font-mono text-ink" />
               </div>

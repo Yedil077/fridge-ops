@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { handle, requireUser } from "@/lib/server/http";
 import { getRuntime, HttpError } from "@/lib/server/runtime";
-import { adminState, checkConnection, diagnostics, testProductCandidates, writeTest } from "@/lib/server/kitshopAdmin";
+import { adminState, checkConnection, diagnostics, ourFridges, runRealApiTest, testProductCandidates, writeTest } from "@/lib/server/kitshopAdmin";
 
 export const dynamic = "force-dynamic";
 
@@ -15,6 +15,8 @@ const Kind = z.enum(["LOAD", "UNLOAD"]);
 const Body = z.discriminatedUnion("action", [
   /** read-only CheckAuth + GetShops */
   z.object({ action: z.literal("check") }),
+  /** REAL API TEST: HTTPS → AUTH → SHOPS → STOCKS → SALES, read-only, never mock */
+  z.object({ action: z.literal("real-test") }),
   /** server-side PAUSE ALL WRITES flag (env variables are never changed from here) */
   z.object({ action: z.literal("pause"), on: z.boolean() }),
   z.object({ action: z.literal("set-test-shop"), shopId: z.string().regex(/^\d{1,12}$/) }),
@@ -40,6 +42,8 @@ export const POST = handle(async (req: Request) => {
   switch (body.action) {
     case "check":
       return checkConnection(rt, admin.name);
+    case "real-test":
+      return { report: await runRealApiTest(rt, admin.name) };
     case "pause":
       st.writesPaused = body.on;
       st.pausedBy = body.on ? admin.name : null;
@@ -49,8 +53,7 @@ export const POST = handle(async (req: Request) => {
       return { paused: st.writesPaused };
     case "set-test-shop": {
       if (busy()) throw new HttpError(409, "Идёт тест с отправленной операцией — сначала завершите проверку");
-      const snap = await rt.snapshot();
-      const f = snap.fridges.find((x) => x.externalId === body.shopId);
+      const f = (await ourFridges(rt)).find((x) => x.shopId === body.shopId);
       if (!f) throw new HttpError(422, "Такой ShopId не привязан ни к одному холодильнику Fridge Ops");
       st.testShop = { shopId: body.shopId, name: f.name, fridgeId: f.id, setBy: admin.name, at: Date.now() };
       if (st.testProduct) st.testProduct = null; // product stock belongs to the shop — choose again

@@ -64,6 +64,8 @@ function handle(method, body) {
       console.log(`[fake-kitshop] MakeFillUp shop ${body.ShopId}: ${JSON.stringify(body.FillUps)} notes="${body.Notes}"`);
       return { ResultCode: 0, Response: "Успешное загрузка товаров" };
     }
+    case "GetSales":
+      return { ResultCode: 0, Sales: [{ SaleId: 1, ShopId: 621583, DeviceId: 1, SaleDateTime: now(), Sum: 450 }] };
     case "GetFillUps": {
       const list = fillUps.filter((f) => !body.Filter?.ShopId || f.ShopId === body.Filter.ShopId);
       return list.length ? { ResultCode: 0, FillUps: list } : { ResultCode: 100, Response: "не найдено" };

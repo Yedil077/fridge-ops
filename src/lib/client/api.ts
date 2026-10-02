@@ -39,6 +39,8 @@ export interface Me {
   name: string;
   role: "EMPLOYEE" | "MANAGER" | "ADMIN";
   mode: string;
+  /** where the numbers on screen come from — never mixed silently */
+  dataSource?: "KITSHOP REAL" | "SIMULATOR" | "CACHE";
   /** closing time from Настройки, e.g. "20:00" — label of the second forecast mode */
   closeTime?: string;
   /** clock time of the "ДО HH:MM" user mode (Настройки) */

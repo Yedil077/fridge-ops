@@ -44,6 +44,15 @@ test("KitShop writes: only documented methods, gated, nothing destructive", () =
   assert.match(env, /^KITSHOP_WRITE_DRY_RUN=true$/m);
 });
 
+test("REAL API diagnostic is read-only", () => {
+  const diag = code("src/services/kitshop/realDiagnostic.ts");
+  const raw = [...diag.matchAll(/transport\.call\("(\w+)"/g)].map((m) => m[1]);
+  assert.deepEqual([...new Set(raw)], ["CheckAuth"], "only CheckAuth goes through the raw transport");
+  const reads = [...diag.matchAll(/reader\.(\w+)\(/g)].map((m) => m[1]);
+  assert.ok(reads.length > 0 && reads.every((m) => m.startsWith("get")), `reader calls must be get*: ${reads}`);
+  assert.doesNotMatch(diag, /makeFillUp|addProduct|MakeFillUp|AddProduct|AddCommand/);
+});
+
 test("KitShop credentials never reach client code", () => {
   const clientFiles = walk("src")
     .filter((f) => /\.(ts|tsx)$/.test(f))
