@@ -31,7 +31,9 @@ test("transport: POST with Auth in the body, serialized requests, password never
   const seen: { url: string; body: { Auth: { RequestId: number; Sign: string; CompanyId: number } } }[] = [];
   const fakeFetch = async (url: string, init: RequestInit) => {
     assert.equal(init.method, "POST");
-    seen.push({ url, body: JSON.parse(String(init.body)) });
+    assert.ok(init.body instanceof Uint8Array, "body is sent as raw bytes");
+    assert.deepEqual(init.headers, {}, "no Content-Type / Accept — only Host + Content-Length like the official examples");
+    seen.push({ url, body: JSON.parse(new TextDecoder().decode(init.body as Uint8Array)) });
     await new Promise((r) => setTimeout(r, 5));
     return new Response(JSON.stringify({ ResultCode: 0, Response: "AuthSucces" }), { status: 200 });
   };

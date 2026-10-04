@@ -77,7 +77,15 @@ export function categorizeResultCode(code: number): { category: ErrorCategory; t
     case 15:
       return { category: "SIGNATURE", text: "неверная подпись Sign" };
     case 2:
-      return { category: "ENDPOINT", text: "некорректный JSON запроса" };
+      return { category: "ENDPOINT", text: "неверная структура JSON запроса" };
+    case 3:
+      return { category: "ENDPOINT", text: "ошибка чтения данных запроса — сервер не смог прочитать тело (заголовки / кодировка)" };
+    case 4:
+    case 5:
+    case 6:
+    case 7:
+    case 8:
+      return { category: "ENDPOINT", text: "неверный формат объекта Auth (пустое или нечисловое поле)" };
     case 28:
       return { category: "ENDPOINT", text: "не заполнены обязательные поля" };
     case 30:
@@ -241,8 +249,22 @@ export async function runRealDiagnostic(opts: DiagnosticOptions): Promise<RealDi
     };
     let res = await attempt(transport.signUpper);
     let last = transport.lastCall;
+    b.details.contentTypeSent = transport.contentType ?? "нет (как в документации)";
+    // ResultCode 3 = the service could not read the body: compare with the other documented-compatible header variant
+    if (!res.error && res.env!.ResultCode === 3) {
+      const original = transport.contentType;
+      transport.contentType = original ? null : "application/json; charset=utf-8";
+      const retry = await attempt(transport.signUpper);
+      b.details.retryContentType = transport.contentType ?? "нет";
+      b.details.retryResult = retry.error ? categorizeError(retry.error).text : `ResultCode ${retry.env!.ResultCode}`;
+      if (!retry.error && retry.env!.ResultCode !== 3) {
+        res = retry;
+        last = transport.lastCall;
+        b.details.contentTypeAccepted = transport.contentType ?? "нет";
+      } else transport.contentType = original;
+    }
     b.ms = last?.ms ?? null;
-    b.details = { endpoint: `POST ${base}/CheckAuth`, ...callDetails(last) };
+    b.details = { endpoint: `POST ${base}/CheckAuth`, ...callDetails(last), ...b.details };
     if (res.error) {
       const c = categorizeError(res.error);
       b.status = "FAIL";

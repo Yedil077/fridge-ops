@@ -9,7 +9,7 @@ import { KitShopTransport } from "../src/services/kitshop/transport";
 const config = { enabled: false, baseUrl: "https://api.kitshop.ru/APIService.svc", companyId: "108943", login: "api-user", password: "s3cret-pass" };
 const OUR = ["621583", "621826"];
 
-type Mode = "ok" | "upper" | "company" | "rights" | "requestId" | "refused" | "html";
+type Mode = "ok" | "upper" | "company" | "rights" | "requestId" | "refused" | "html" | "needsJsonHeader";
 
 function fakeFetch(mode: Mode, calls: string[]) {
   return (async (url: string | URL | Request, init?: RequestInit) => {
@@ -19,7 +19,11 @@ function fakeFetch(mode: Mode, calls: string[]) {
     const method = u.split("/").pop()!;
     calls.push(method);
     if (mode === "html") return new Response("<html>Service unavailable</html>", { status: 200, headers: { "content-type": "text/html" } });
-    const body = JSON.parse(String(init.body));
+    const ct = (init.headers as Record<string, string> | undefined)?.["Content-Type"];
+    // the real service answered 3 "Ошибка чтения данных запроса" to a body it could not read
+    if (mode === "ok" && ct) return new Response(JSON.stringify({ ResultCode: 3, ErrorMessage: "Ошибка чтения данных запроса" }), { status: 200, headers: { "content-type": "application/json" } });
+    if (mode === "needsJsonHeader" && !ct) return new Response(JSON.stringify({ ResultCode: 3, ErrorMessage: "Ошибка чтения данных запроса" }), { status: 200, headers: { "content-type": "application/json" } });
+    const body = JSON.parse(new TextDecoder().decode(init.body as Uint8Array));
     const a = body.Auth;
     const lower = createHash("md5").update(`${a.CompanyId}${config.password}${a.RequestId}`).digest("hex");
     const json = (o: unknown) => new Response(JSON.stringify(o), { status: 200, headers: { "content-type": "application/json; charset=utf-8" } });
@@ -121,7 +125,17 @@ test("HTML instead of a KiT Shop JSON envelope → ENDPOINT, not 'connection fai
   assert.equal(step(report, "endpoint").details.contentType, "text/html");
 });
 
+test("ResultCode 3 (body not readable) → the other header variant is tried and reported", async () => {
+  const { report } = await run("needsJsonHeader");
+  assert.equal(report.summary.authentication, "PASS");
+  const ep = step(report, "endpoint");
+  assert.equal(ep.details.contentTypeSent, "нет (как в документации)");
+  assert.match(String(ep.details.contentTypeAccepted), /application\/json/);
+});
+
 test("ResultCode categories follow Appendix 1", () => {
+  assert.equal(categorizeResultCode(3)!.category, "ENDPOINT");
+  assert.match(categorizeResultCode(3)!.text, /чтения данных запроса/);
   assert.equal(categorizeResultCode(11)!.category, "AUTH");
   assert.equal(categorizeResultCode(13)!.category, "PERMISSION");
   assert.equal(categorizeResultCode(15)!.category, "SIGNATURE");

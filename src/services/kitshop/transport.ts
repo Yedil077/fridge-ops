@@ -13,7 +13,9 @@ import type { KitShopConfig } from "./config";
 export const DEFAULT_BASE_URL = "https://api.kitshop.ru/APIService.svc";
 
 /** Result codes from Appendix 1 that mean "the request was processed and rejected" (nothing was applied). */
-export const DEFINITE_REJECT_CODES = new Set([1, 2, 9, 10, 11, 12, 13, 14, 15, 28, 30, 42, 51, 61, 100]);
+export const DEFINITE_REJECT_CODES = new Set([
+  1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 30, 31, 32, 33, 34, 40, 41, 42, 51, 60, 61, 70, 100,
+]);
 
 export interface KitShopEnvelope {
   ResultCode: number;
@@ -98,6 +100,12 @@ export function parseKitshopDate(s: string): number | null {
 
 type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
 
+/** KITSHOP_CONTENT_TYPE: unset / "none" = no header (documented); "json" = application/json; anything else = sent as is. */
+export function contentTypeFromEnv(v = process.env.KITSHOP_CONTENT_TYPE): string | null {
+  if (!v || v === "none") return null;
+  return v === "json" ? "application/json; charset=utf-8" : v;
+}
+
 /** connection never established → the request provably did not reach KiT Shop */
 const NOT_SENT_CODES = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "ENETUNREACH", "EHOSTUNREACH", "UND_ERR_CONNECT_TIMEOUT"]);
 
@@ -124,14 +132,28 @@ export class KitShopTransport {
 
   constructor(
     config: KitShopConfig,
-    opts: { fetch?: FetchLike; nextRequestId?: () => number; onCall?: (r: CallRecord) => void; signUpper?: boolean } = {},
+    opts: {
+      fetch?: FetchLike;
+      nextRequestId?: () => number;
+      onCall?: (r: CallRecord) => void;
+      signUpper?: boolean;
+      /** Content-Type header; null (default) = none, exactly like the official examples (only Host + Content-Length) */
+      contentType?: string | null;
+    } = {},
   ) {
     this.#config = config;
     this.#fetch = opts.fetch ?? ((url, init) => fetch(url, init));
     this.#nextRequestId = opts.nextRequestId ?? createRequestIdGenerator();
     this.#onCall = opts.onCall;
     this.signUpper = opts.signUpper ?? false;
+    this.contentType = opts.contentType === undefined ? contentTypeFromEnv() : opts.contentType;
   }
+
+  /**
+   * KiT Shop docs: requests carry only Host + Content-Length ("отключить все заголовки кроме Content-Length и Host").
+   * With "Content-Type: application/json" the service answered ResultCode 3 "Ошибка чтения данных запроса".
+   */
+  contentType: string | null;
 
   /** Serialized: RequestId order = arrival order. */
   call(method: string, params: Record<string, unknown>, timeoutMs = 20_000, opts: { signUpper?: boolean } = {}): Promise<KitShopEnvelope> {
@@ -179,8 +201,9 @@ export class KitShopTransport {
     try {
       res = await this.#fetch(`${base}/${method}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify(body),
+        // raw bytes: fetch adds no Content-Type of its own for a Uint8Array body (a string body would become text/plain)
+        headers: this.contentType ? { "Content-Type": this.contentType } : {},
+        body: new TextEncoder().encode(JSON.stringify(body)),
         signal: controller.signal,
         cache: "no-store",
       });
