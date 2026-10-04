@@ -469,7 +469,11 @@ function RealApiTest({ d, busy, run, runAuth }: { d: Diag; busy: string | null; 
               <b className="text-crit-ink">REAL KITSHOP UNAVAILABLE</b> — падает шаг «{r.failingStep}»{r.failingCategory ? `, категория ${r.failingCategory}` : ""}.
             </div>
           ) : (
-            <div className="mt-3 rounded-lg border border-good/50 bg-good/10 px-3 py-2 text-[13px] text-good-ink">Все шаги прошли на реальном KiT Shop.</div>
+            <div className="mt-3 rounded-lg border border-good/50 bg-good/10 px-3 py-2 text-[13px] text-good-ink">
+              {r.steps.some((x) => x.status === "NOT_TESTED")
+                ? `Пройдено на реальном KiT Shop: ${r.steps.filter((x) => x.status === "PASS").map((x) => x.title).join(", ")}. Остальные шаги не запускались.`
+                : "Все шаги прошли на реальном KiT Shop."}
+            </div>
           )}
           <div className="mt-4 space-y-2">
             {r.steps.map((st) => (
