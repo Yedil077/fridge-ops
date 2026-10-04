@@ -17,6 +17,8 @@ const Body = z.discriminatedUnion("action", [
   z.object({ action: z.literal("check") }),
   /** REAL API TEST: HTTPS → AUTH → SHOPS → STOCKS → SALES, read-only, never mock */
   z.object({ action: z.literal("real-test") }),
+  /** only DNS/HTTPS + CheckAuth */
+  z.object({ action: z.literal("real-test-auth") }),
   /** server-side PAUSE ALL WRITES flag (env variables are never changed from here) */
   z.object({ action: z.literal("pause"), on: z.boolean() }),
   z.object({ action: z.literal("set-test-shop"), shopId: z.string().regex(/^\d{1,12}$/) }),
@@ -44,6 +46,8 @@ export const POST = handle(async (req: Request) => {
       return checkConnection(rt, admin.name);
     case "real-test":
       return { report: await runRealApiTest(rt, admin.name) };
+    case "real-test-auth":
+      return { report: await runRealApiTest(rt, admin.name, true) };
     case "pause":
       st.writesPaused = body.on;
       st.pausedBy = body.on ? admin.name : null;

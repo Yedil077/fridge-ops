@@ -65,7 +65,42 @@ export function signRequest(companyId: string | number, password: string, reques
 }
 
 /** Outcome of every call — for the diagnostics page (no bodies, no credentials). */
-type MetaKeys = "requestId" | "previousRequestId" | "signCase" | "signLength" | "httpStatus" | "contentType";
+type MetaKeys = "requestId" | "previousRequestId" | "signCase" | "signLength" | "httpStatus" | "contentType" | "requestPreview" | "headersSent" | "bodyBytes";
+
+/** Bad server configuration (e.g. CompanyId with quotes) — detected before anything is sent. */
+export class KitShopConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "KitShopConfigError";
+  }
+}
+
+export interface AuthObject {
+  CompanyId: number;
+  RequestId: number;
+  UserLogin: string;
+  Sign: string;
+}
+
+/**
+ * The request body exactly as in the official examples: { "Auth": { CompanyId, RequestId, UserLogin, Sign }, ...params }.
+ * CompanyId / RequestId are JSON numbers; the object is serialized ONCE.
+ */
+export function buildRequestBody(auth: AuthObject, params: Record<string, unknown> = {}): string {
+  if (!Number.isSafeInteger(auth.CompanyId) || auth.CompanyId <= 0) throw new KitShopConfigError("KITSHOP_COMPANY_ID должен быть целым числом без кавычек и пробелов");
+  if (!Number.isSafeInteger(auth.RequestId) || auth.RequestId <= 0) throw new KitShopConfigError("RequestId вне безопасного диапазона целых чисел");
+  if (!auth.UserLogin) throw new KitShopConfigError("KITSHOP_LOGIN пустой");
+  return JSON.stringify({ Auth: { CompanyId: auth.CompanyId, RequestId: auth.RequestId, UserLogin: auth.UserLogin, Sign: auth.Sign }, ...params });
+}
+
+/** Same body with the login masked and the Sign replaced by its length — safe to show and log. */
+export function sanitizedRequestPreview(bodyJson: string): string {
+  const parsed = JSON.parse(bodyJson) as { Auth?: Partial<AuthObject> } & Record<string, unknown>;
+  const a = parsed.Auth ?? {};
+  const login = typeof a.UserLogin === "string" ? a.UserLogin : "";
+  const masked = login.length <= 4 ? "•".repeat(login.length) : `${login.slice(0, 2)}${"•".repeat(login.length - 4)}${login.slice(-2)}`;
+  return JSON.stringify({ ...parsed, Auth: { ...a, UserLogin: masked, Sign: typeof a.Sign === "string" ? `<${a.Sign.length} chars>` : a.Sign } });
+}
 
 export interface CallRecord {
   method: string;
@@ -81,6 +116,11 @@ export interface CallRecord {
   signLength: number | null;
   httpStatus: number | null;
   contentType: string | null;
+  /** body with masked login and "<32 chars>" instead of the Sign */
+  requestPreview: string | null;
+  /** headers WE set (fetch adds Host / Content-Length itself) */
+  headersSent: string | null;
+  bodyBytes: number | null;
   failure: TransportFailure | null;
 }
 
@@ -124,6 +164,9 @@ export class KitShopTransport {
     signLength: null,
     httpStatus: null,
     contentType: null,
+    requestPreview: null,
+    headersSent: null,
+    bodyBytes: null,
   };
   /** the last finished call (diagnostics) */
   lastCall: CallRecord | null = null;
@@ -173,7 +216,12 @@ export class KitShopTransport {
         });
         return env;
       } catch (e) {
-        record({ ok: false, resultCode: null, error: e instanceof Error ? e.message : "error", failure: e instanceof KitShopTransportError ? e.kind : "lost" });
+        record({
+          ok: false,
+          resultCode: null,
+          error: e instanceof Error ? e.message : "error",
+          failure: e instanceof KitShopTransportError ? e.kind : e instanceof KitShopConfigError ? null : "lost",
+        });
         throw e;
       }
     });
@@ -183,17 +231,30 @@ export class KitShopTransport {
 
   async #send(method: string, params: Record<string, unknown>, timeoutMs: number, signUpper: boolean): Promise<KitShopEnvelope> {
     const c = this.#config;
-    this.#meta = { requestId: null, previousRequestId: this.#lastRequestId, signCase: signUpper ? "upper" : "lower", signLength: null, httpStatus: null, contentType: null };
+    this.#meta = {
+      requestId: null,
+      previousRequestId: this.#lastRequestId,
+      signCase: signUpper ? "upper" : "lower",
+      signLength: null,
+      httpStatus: null,
+      contentType: null,
+      requestPreview: null,
+      headersSent: null,
+      bodyBytes: null,
+    };
     if (!c.companyId || !c.login || !c.password) throw new KitShopTransportError("unreachable", "KiT Shop credentials are not configured");
+    if (!/^\d+$/.test(c.companyId)) throw new KitShopConfigError("KITSHOP_COMPANY_ID должен состоять только из цифр (без кавычек и пробелов)");
     const requestId = this.#nextRequestId();
     const sign = signRequest(c.companyId, c.password, requestId, signUpper);
     this.#meta.requestId = requestId;
     this.#meta.signLength = sign.length;
     this.#lastRequestId = requestId;
-    const body = {
-      Auth: { CompanyId: Number(c.companyId), RequestId: requestId, UserLogin: c.login, Sign: sign },
-      ...params,
-    };
+    const bodyJson = buildRequestBody({ CompanyId: Number(c.companyId), RequestId: requestId, UserLogin: c.login, Sign: sign }, params);
+    const bytes = new TextEncoder().encode(bodyJson);
+    const headers: Record<string, string> = this.contentType ? { "Content-Type": this.contentType } : {};
+    this.#meta.requestPreview = sanitizedRequestPreview(bodyJson);
+    this.#meta.headersSent = Object.keys(headers).length ? Object.entries(headers).map(([k, v]) => `${k}: ${v}`).join("; ") : "нет (fetch добавит Host и Content-Length)";
+    this.#meta.bodyBytes = bytes.length;
     const base = (c.baseUrl || DEFAULT_BASE_URL).replace(/\/+$/, "");
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -202,8 +263,8 @@ export class KitShopTransport {
       res = await this.#fetch(`${base}/${method}`, {
         method: "POST",
         // raw bytes: fetch adds no Content-Type of its own for a Uint8Array body (a string body would become text/plain)
-        headers: this.contentType ? { "Content-Type": this.contentType } : {},
-        body: new TextEncoder().encode(JSON.stringify(body)),
+        headers,
+        body: bytes,
         signal: controller.signal,
         cache: "no-store",
       });

@@ -79,7 +79,9 @@ test("the report never contains the password or a Sign value", async () => {
   const text = JSON.stringify(report) + formatReport(report);
   assert.doesNotMatch(text, /s3cret-pass/);
   assert.doesNotMatch(text, /[0-9a-f]{32}/i, "no MD5 hex anywhere");
-  assert.doesNotMatch(text, /108943/, "company id is masked");
+  // CompanyId is shown in full only inside the request preview (as the JSON number we send); masked everywhere else
+  assert.doesNotMatch(text.replace(/\\*"CompanyId\\*":108943/g, ""), /108943/, "company id is masked outside the request preview");
+  assert.match(text, /"UserLogin\\":\\"ap••••er\\"/, "login masked in the request preview");
 });
 
 test("Sign accepted only in upper case → detected, PASS, tells which case to configure", async () => {

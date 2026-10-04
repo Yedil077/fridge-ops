@@ -49,6 +49,8 @@ export interface DiagnosticOptions {
   /** our KiT Shop ShopIds — used to prove we are connected to the RIGHT company */
   knownShopIds?: string[];
   testShopId?: string;
+  /** run only DNS/HTTPS + CheckAuth (no GetShops / stocks / sales) */
+  authOnly?: boolean;
   /** wall-clock ms in the fridges' timezone (KiT Shop dates are local) */
   now: () => number;
   /** injectable for tests */
@@ -108,6 +110,7 @@ export function categorizeError(e: unknown): { category: ErrorCategory; text: st
     const c = categorizeResultCode(code);
     return { category: c?.category ?? "ENDPOINT", text: `ResultCode ${code}: ${c?.text ?? ""} — ${(e as Error).message}`, httpStatus: null };
   }
+  if ((e as { name?: string })?.name === "KitShopConfigError") return { category: "CONFIG", text: (e as Error).message, httpStatus: null };
   if ((e as { name?: string })?.name === "ZodError") return { category: "DATA", text: "ответ KiT Shop не совпал с ожидаемой структурой данных", httpStatus: null };
   return { category: "NETWORK", text: e instanceof Error ? e.message : String(e), httpStatus: null };
 }
@@ -126,6 +129,9 @@ function callDetails(c: CallRecord | null): Record<string, Cell> {
     requestId: c.requestId,
     signCase: c.signCase,
     signLength: c.signLength,
+    headersSent: c.headersSent,
+    bodyBytes: c.bodyBytes,
+    requestPreview: c.requestPreview,
   };
 }
 
@@ -213,7 +219,15 @@ export async function runRealDiagnostic(opts: DiagnosticOptions): Promise<RealDi
   a.ms = Date.now() - tA;
 
   // ── STEP C (config) is checked before any authenticated call ──
-  const configured = { companyIdConfigured: !!cfg.companyId, userLoginConfigured: !!cfg.login, passwordConfigured: !!cfg.password };
+  // configuration hygiene: typical copy-paste problems, without revealing values
+  const configured = {
+    companyIdConfigured: !!cfg.companyId,
+    userLoginConfigured: !!cfg.login,
+    passwordConfigured: !!cfg.password,
+    companyIdDigitsOnly: /^\d+$/.test(cfg.companyId),
+    loginHasSpacesOrQuotes: /^\s|\s$|^["']|["']$/.test(cfg.login),
+    passwordHasSpacesOrQuotes: /^\s|\s$|^["']|["']$/.test(cfg.password),
+  };
   let signCaseAccepted: "lower" | "upper" | null = null;
   let authOk = false;
 
@@ -323,7 +337,10 @@ export async function runRealDiagnostic(opts: DiagnosticOptions): Promise<RealDi
   // ── STEP E — permission & STEP F — shops (GetShops) ──
   let shopIds: { id: string; stocks: boolean | null }[] = [];
   let companyStatus: StepStatus = "NOT_TESTED";
-  if (!authOk) {
+  if (opts.authOnly) {
+    notTested("permission", "Права API-пользователя", "режим «только CheckAuth»");
+    notTested("shops", "Торговые точки", "режим «только CheckAuth»");
+  } else if (!authOk) {
     notTested("permission", "Права API-пользователя", "аутентификация не пройдена");
     notTested("shops", "Торговые точки", "аутентификация не пройдена");
   } else {
@@ -370,7 +387,9 @@ export async function runRealDiagnostic(opts: DiagnosticOptions): Promise<RealDi
 
   // ── STEP G — stocks of ONE shop ──
   const shopsStep = steps.find((s) => s.id === "shops");
-  if (!authOk || !shopsStep || shopsStep.status === "FAIL" || !shopIds.length) {
+  if (opts.authOnly) {
+    notTested("stocks", "Остатки одной точки", "режим «только CheckAuth»");
+  } else if (!authOk || !shopsStep || shopsStep.status === "FAIL" || !shopIds.length) {
     notTested("stocks", "Остатки одной точки", "нет списка точек");
   } else {
     const known = opts.knownShopIds ?? [];
@@ -397,7 +416,9 @@ export async function runRealDiagnostic(opts: DiagnosticOptions): Promise<RealDi
   }
 
   // ── STEP H — sales in a tiny window ──
-  if (!authOk || !shopsStep || shopsStep.status === "FAIL") {
+  if (opts.authOnly) {
+    notTested("sales", "Продажи за последний час", "режим «только CheckAuth»");
+  } else if (!authOk || !shopsStep || shopsStep.status === "FAIL") {
     notTested("sales", "Продажи за последний час", "аутентификация / точки не пройдены");
   } else {
     const sa = step({ id: "sales", title: "Продажи за последний час", status: "PASS", category: null, ms: null, message: "", details: {} });

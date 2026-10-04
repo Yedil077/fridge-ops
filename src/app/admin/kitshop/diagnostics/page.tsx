@@ -102,7 +102,7 @@ export default function KitShopDiagnosticsPage() {
           <Tile label="Last error" value={d.lastError ? `${fmt(d.lastError.at)} · ${d.lastError.method}: ${d.lastError.error ?? d.lastError.resultCode}` : "—"} small />
         </section>
 
-        <RealApiTest d={d} busy={busy} run={() => post("real", { action: "real-test" })} />
+        <RealApiTest d={d} busy={busy} run={() => post("real", { action: "real-test" })} runAuth={() => post("real-auth", { action: "real-test-auth" })} />
 
         {/* ── switches ── */}
         <Card title="KITSHOP WRITE">
@@ -386,7 +386,7 @@ const REAL_TONE: Record<StepStatus, string> = { PASS: "text-good-ink", FAIL: "te
 const REAL_LABEL: Record<StepStatus, string> = { PASS: "PASS", FAIL: "FAIL", WARN: "WARN", NOT_TESTED: "NOT TESTED" };
 
 /** Five independent steps — never one generic "connected". Read-only; never mock data. */
-function RealApiTest({ d, busy, run }: { d: Diag; busy: string | null; run: () => void }) {
+function RealApiTest({ d, busy, run, runAuth }: { d: Diag; busy: string | null; run: () => void; runAuth: () => void }) {
   const r: RealDiagnosticReport | null = d.realTest;
   const byId = (id: RealStep["id"]) => r?.steps.find((x) => x.id === id);
   const status = (id: RealStep["id"]): StepStatus => byId(id)?.status ?? "NOT_TESTED";
@@ -403,13 +403,22 @@ function RealApiTest({ d, busy, run }: { d: Diag; busy: string | null; run: () =
     <section className={clsx("card p-4", d.target.real && "border-crit/50")}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="label">REAL API TEST · только чтение</div>
-        <button
-          onClick={run}
-          disabled={!!busy || (!d.target.realDiagnostics && !d.target.readEnabled)}
-          className="h-10 rounded-lg bg-crit/25 px-4 text-[13px] font-semibold text-crit-ink disabled:opacity-40"
-        >
-          {busy === "real" ? "Проверяем…" : "ЗАПУСТИТЬ REAL API TEST"}
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={runAuth}
+            disabled={!!busy || (!d.target.realDiagnostics && !d.target.readEnabled)}
+            className="h-10 rounded-lg bg-surface-3 px-4 text-[13px] font-semibold disabled:opacity-40"
+          >
+            {busy === "real-auth" ? "Проверяем…" : "ТОЛЬКО CheckAuth"}
+          </button>
+          <button
+            onClick={run}
+            disabled={!!busy || (!d.target.realDiagnostics && !d.target.readEnabled)}
+            className="h-10 rounded-lg bg-crit/25 px-4 text-[13px] font-semibold text-crit-ink disabled:opacity-40"
+          >
+            {busy === "real" ? "Проверяем…" : "ЗАПУСТИТЬ REAL API TEST"}
+          </button>
+        </div>
       </div>
       <p className="mt-1 text-[12px] text-ink-3">
         CheckAuth → GetShops → GetShopStocks (одна точка) → GetSales (последний час). Через тот же клиент, что и приложение. Никаких записей, никаких данных симулятора.

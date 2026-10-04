@@ -90,7 +90,7 @@ export function kitshopTarget() {
 }
 
 /** REAL API TEST — read-only connectivity diagnostic through the app's own transport. Never mock, never a write. */
-export async function runRealApiTest(rt: Runtime, user: string) {
+export async function runRealApiTest(rt: Runtime, user: string, authOnly = false) {
   const s = kitshopServerInfo();
   const target = kitshopTarget();
   if (!target.realDiagnostics && !s.config.enabled)
@@ -103,6 +103,7 @@ export async function runRealApiTest(rt: Runtime, user: string) {
     knownShopIds: fridges.map((f) => f.shopId).filter((id): id is string => !!id),
     testShopId: process.env.KITSHOP_TEST_SHOP_ID || st.testShop?.shopId || undefined,
     now: () => wallClockNow(process.env.APP_TIMEZONE || "Asia/Almaty"),
+    authOnly,
   });
   st.realDiagnostic = report;
   rt.ops.audit(user, "kitshop.real_diagnostic", "kitshop", "diagnostic", { summary: report.summary, failingStep: report.failingStep, category: report.failingCategory });
