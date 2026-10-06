@@ -141,7 +141,7 @@ export interface AppState {
   operations: KsOperation[];
   /** audit log of every write and every manual decision */
   audit: AuditEntry[];
-  /** confirmed Fridge Ops product → KiT Shop product links (our product id → mapping) */
+  /** confirmed Apps Холодосов product → KiT Shop product links (our product id → mapping) */
   productMappings: Record<string, ConfirmedMapping>;
   /** clock time of the user forecast mode "ДО HH:MM" (minutes, default 20:00) — NOT a closing time of the network */
   untilMinute?: number;

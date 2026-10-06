@@ -1,5 +1,5 @@
 /**
- * Fridge Ops product ↔ KiT Shop product mapping.
+ * Apps Холодосов product ↔ KiT Shop product mapping.
  * Order of trust: confirmed mapping / kitshop_product_id → barcode → vendor_code.
  * A NAME is only ever a suggestion — never an automatic match (similar names are different dishes).
  * Ambiguous matches (two KiT Shop products with the same barcode) → MAPPING_REQUIRED.
@@ -25,7 +25,7 @@ export interface ConfirmedMapping {
   matchedBy: MatchedBy;
   confirmedBy: string;
   at: number;
-  /** "Деактивировать локально": product hidden in Fridge Ops (never deleted in KiT Shop) */
+  /** "Деактивировать локально": product hidden in Apps Холодосов (never deleted in KiT Shop) */
   inactive?: boolean;
 }
 

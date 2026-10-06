@@ -1,4 +1,4 @@
-# Fridge Ops — production
+# Apps Холодосов — production
 
 Цель: сотрудникам не нужны одна Wi-Fi сеть, `start.bat` и включённый компьютер в офисе. Сервер работает круглосуточно по HTTPS.
 
@@ -7,7 +7,7 @@
 ```
 Телефоны (Android app / PWA)  ─┐
 Компьютеры (браузер)          ─┼─ HTTPS ─▶ Caddy (сертификат Let's Encrypt)
-                               │              └─▶ Fridge Ops (Next.js, Docker) ─▶ PostgreSQL (Docker volume)
+                               │              └─▶ Apps Холодосов (Next.js, Docker) ─▶ PostgreSQL (Docker volume)
                                │                          └─▶ KitShop API (ТОЛЬКО ЧТЕНИЕ)
 ```
 

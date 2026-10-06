@@ -58,7 +58,7 @@ export const POST = handle(async (req: Request) => {
     case "set-test-shop": {
       if (busy()) throw new HttpError(409, "Идёт тест с отправленной операцией — сначала завершите проверку");
       const f = (await ourFridges(rt)).find((x) => x.shopId === body.shopId);
-      if (!f) throw new HttpError(422, "Такой ShopId не привязан ни к одному холодильнику Fridge Ops");
+      if (!f) throw new HttpError(422, "Такой ShopId не привязан ни к одному холодильнику Apps Холодосов");
       st.testShop = { shopId: body.shopId, name: f.name, fridgeId: f.id, setBy: admin.name, at: Date.now() };
       if (st.testProduct) st.testProduct = null; // product stock belongs to the shop — choose again
       rt.ops.audit(admin.name, "kitshop.test_shop", "kitshop", body.shopId, { name: f.name });

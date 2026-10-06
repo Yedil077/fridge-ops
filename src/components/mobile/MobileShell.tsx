@@ -67,7 +67,7 @@ export function MobileShell({ children, now, title, back }: { children: ReactNod
             {title ? (
               <div className="truncate text-[17px] font-semibold">{title}</div>
             ) : (
-              <div className="text-[15px] font-bold tracking-[0.14em]">FRIDGE OPS</div>
+              <div className="text-[15px] font-bold tracking-[0.14em]">APPS ХОЛОДОСОВ</div>
             )}
           </div>
           {now !== undefined && <LiveClock serverNow={now} className="num font-mono text-[15px] text-ink-2" />}

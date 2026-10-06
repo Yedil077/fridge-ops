@@ -1,5 +1,5 @@
 /**
- * KiT Shop write operations, as Fridge Ops records them (our database is the journal; KiT Shop is the target).
+ * KiT Shop write operations, as Apps Холодосов records them (our database is the journal; KiT Shop is the target).
  * See docs/KITSHOP_WRITE_API_AUDIT.md for what the KiT Shop API can and cannot do.
  */
 

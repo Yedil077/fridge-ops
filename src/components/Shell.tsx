@@ -36,7 +36,7 @@ export function Shell({
         <div className="mx-auto flex h-14 max-w-[1480px] items-center gap-4 px-4 sm:px-6">
           <Link href="/" className="flex items-center gap-2 font-semibold tracking-tight">
             <span className="grid h-7 w-7 place-items-center rounded-lg border border-line-strong bg-surface-2 text-[13px]">❄</span>
-            <span className="hidden sm:inline">Fridge Ops</span>
+            <span className="hidden sm:inline">Apps Холодосов</span>
           </Link>
           <nav className="flex items-center gap-1">
             {NAV.filter((n) => atLeast(me, n.role)).map((n) => {

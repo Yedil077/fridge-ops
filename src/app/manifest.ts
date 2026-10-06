@@ -1,10 +1,10 @@
 import type { MetadataRoute } from "next";
 
-/** PWA manifest — install Fridge Ops on a phone as a standalone app. */
+/** PWA manifest — install Apps Холодосов on a phone as a standalone app. */
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "Fridge Ops",
-    short_name: "Fridge Ops",
+    name: "Apps Холодосов",
+    short_name: "Холодосы",
     description: "Что, откуда и куда перенести между холодильниками",
     start_url: "/m",
     scope: "/",

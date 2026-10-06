@@ -154,7 +154,7 @@ export function bootstrapUsers(state: AppState): string[] {
     createUser(state, { login: "anna", name: "Анна", role: "EMPLOYEE", pin: "3333" });
     created.push("admin", "manager", "anna");
   } else {
-    console.warn("[fridge-ops] No users yet. Set ADMIN_LOGIN and ADMIN_PIN to create the first administrator.");
+    console.warn("[apps-holodosov] No users yet. Set ADMIN_LOGIN and ADMIN_PIN to create the first administrator.");
   }
   return created;
 }

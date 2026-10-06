@@ -12,7 +12,7 @@ import {
 } from "./types";
 
 /**
- * Operations service: the ONLY way Fridge Ops writes to KiT Shop.
+ * Operations service: the ONLY way Apps Холодосов writes to KiT Shop.
  *
  * Safety rules (spec §9–§12, audit §2.1):
  *  • idempotency: the client generates operation_uuid; a repeated submit with the same id returns the

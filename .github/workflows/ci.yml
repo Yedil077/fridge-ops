@@ -82,6 +82,6 @@ jobs:
 
       - uses: actions/upload-artifact@v5
         with:
-          name: fridge-ops-debug-apk
+          name: apps-holodosov-debug-apk
           path: android/app/build/outputs/apk/debug/*.apk
           retention-days: 14

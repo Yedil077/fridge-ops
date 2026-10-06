@@ -1,4 +1,4 @@
-// Applies Fridge Ops identity to the Capacitor Android project:
+// Applies Apps Холодосов identity to the Capacitor Android project:
 //  • launcher icons (legacy + round + adaptive foreground) for every density
 //  • splash screens (portrait/landscape) and Android 12+ SplashScreen theme
 //  • dark status/navigation bars matching the web UI

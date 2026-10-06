@@ -1,4 +1,4 @@
-# Fridge Ops — безопасность
+# Apps Холодосов — безопасность
 
 ## Главные правила
 
@@ -12,7 +12,7 @@
    Подробно: `docs/KITSHOP_WRITE_API_AUDIT.md`. Проверяется тестами `tests/security.test.ts`, `tests/kitshopOps.test.ts` в CI.
 2. **Секреты только на сервере.** Логин/пароль KitShop, пароль базы, `AUTH_SECRET` живут в `.env.production` на сервере.
    Их нет во фронтенде, в APK, в localStorage и в git (`.gitignore` + тест).
-3. **Правильный путь данных:** `Android/браузер → Fridge Ops backend → KitShop (READ ONLY)`. Телефон никогда не обращается к KitShop.
+3. **Правильный путь данных:** `Android/браузер → Apps Холодосов backend → KitShop (READ ONLY)`. Телефон никогда не обращается к KitShop.
 
 ## Вход и сессии
 

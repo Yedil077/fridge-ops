@@ -23,7 +23,7 @@ interface Preview {
 /**
  * Товары и KiT Shop: mapping status, catalog health, admin actions.
  * Matching: id → barcode → vendor code. Names are only suggestions and need a confirmation.
- * Nothing is ever deleted in KiT Shop: "deactivate" hides the product in Fridge Ops only.
+ * Nothing is ever deleted in KiT Shop: "deactivate" hides the product in Apps Холодосов only.
  */
 export default function ProductsAdminPage() {
   const qc = useQueryClient();
@@ -110,7 +110,7 @@ export default function ProductsAdminPage() {
                   <div className="min-w-0">
                     <div className="text-[15px] font-semibold">{r.name}</div>
                     <div className="text-[12px] text-ink-3">
-                      {r.sku} · {r.barcode ?? "без штрихкода"} · {r.price} ₸ {r.inactive && "· скрыт в Fridge Ops"}
+                      {r.sku} · {r.barcode ?? "без штрихкода"} · {r.price} ₸ {r.inactive && "· скрыт в Apps Холодосов"}
                     </div>
                   </div>
                   <div className="text-right text-[13px]">
@@ -172,7 +172,7 @@ export default function ProductsAdminPage() {
                     onClick={() => post(r.id, { action: "deactivate", productId: r.id, inactive: !r.inactive })}
                     className="h-9 rounded-lg bg-surface-2 px-3 text-[13px] text-ink-3"
                   >
-                    {r.inactive ? "Вернуть в Fridge Ops" : "Деактивировать локально"}
+                    {r.inactive ? "Вернуть в Apps Холодосов" : "Деактивировать локально"}
                   </button>
                 </div>
               </div>

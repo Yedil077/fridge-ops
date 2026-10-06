@@ -1,5 +1,5 @@
 /*
- * Fridge Ops service worker — app shell cache for bad connections.
+ * Apps Холодосов service worker — app shell cache for bad connections.
  *  • static assets (_next/static, icons): cache-first (they are content-hashed)
  *  • pages under /m: network-first, fall back to the cached copy
  *  • GET /api/mobile/*: network-first, fall back to the last good answer (read-only data)

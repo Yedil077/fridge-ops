@@ -27,7 +27,7 @@ const target = JSON.stringify(url);
 
 fs.writeFileSync(
   path.join(out, "index.html"),
-  page("Fridge Ops", `<div class="logo">❄</div><h1>Fridge Ops</h1><p>Открываю…</p>
+  page("Apps Холодосов", `<div class="logo">❄</div><h1>Apps Холодосов</h1><p>Открываю…</p>
 <script>location.replace(${target});</script>`),
 );
 

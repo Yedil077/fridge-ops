@@ -1,4 +1,4 @@
-# Fridge Ops — production image (Next.js standalone server).
+# Apps Холодосов — production image (Next.js standalone server).
 # Secrets are NOT baked in: they come from the environment at runtime (.env.production on the server).
 
 FROM node:22-alpine AS deps

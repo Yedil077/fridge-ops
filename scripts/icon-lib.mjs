@@ -1,4 +1,4 @@
-// Tiny PNG renderer for the Fridge Ops glyph (no dependencies). Used by make-icons.mjs and android-assets.mjs.
+// Tiny PNG renderer for the Apps Холодосов glyph (no dependencies). Used by make-icons.mjs and android-assets.mjs.
 import zlib from "node:zlib";
 
 export const BG = [11, 12, 14]; // #0b0c0e — app background

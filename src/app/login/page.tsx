@@ -54,7 +54,7 @@ export default function LoginPage() {
         <div className="mb-6 flex items-center gap-3">
           <span className="grid h-11 w-11 place-items-center rounded-xl border border-line-strong bg-surface-2 text-[20px]">❄</span>
           <div>
-            <div className="text-[18px] font-semibold">Fridge Ops</div>
+            <div className="text-[18px] font-semibold">Apps Холодосов</div>
             <div className="text-[13px] text-ink-3">Вход для сотрудников</div>
           </div>
         </div>

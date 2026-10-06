@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 /*
- * Fridge Ops — dark operations-center theme.
+ * Apps Холодосов — dark operations-center theme.
  * Tokens are defined once here; components use them through Tailwind theme colors.
  */
 @theme {

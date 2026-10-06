@@ -1,11 +1,11 @@
-# Fridge Ops — Android
+# Apps Холодосов — Android
 
 ## Как устроено (архитектура A)
 
 ```
 Android-приложение (Capacitor, kz.greencity.fridgeops)
    └─ WebView без адресной строки → https://<ваш-домен>/m   ← интерфейс сотрудника
-        └─ Fridge Ops backend (Next.js API) → PostgreSQL
+        └─ Apps Холодосов backend (Next.js API) → PostgreSQL
                                           → KitShop (ТОЛЬКО ЧТЕНИЕ, только с сервера)
 ```
 

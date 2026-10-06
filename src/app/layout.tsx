@@ -8,14 +8,14 @@ const inter = Inter({ subsets: ["latin", "cyrillic"], variable: "--font-inter", 
 const mono = JetBrains_Mono({ subsets: ["latin", "cyrillic"], variable: "--font-jb", display: "swap" });
 
 export const metadata: Metadata = {
-  title: "Fridge Ops",
+  title: "Apps Холодосов",
   description: "Что, откуда и куда перенести между холодильниками",
-  applicationName: "Fridge Ops",
+  applicationName: "Apps Холодосов",
   icons: {
     icon: [{ url: "/icon.svg", type: "image/svg+xml" }, { url: "/icons/icon-192.png", sizes: "192x192" }],
     apple: "/icons/apple-touch-icon.png",
   },
-  appleWebApp: { capable: true, title: "Fridge Ops", statusBarStyle: "black-translucent" },
+  appleWebApp: { capable: true, title: "Apps Холодосов", statusBarStyle: "black-translucent" },
   formatDetection: { telephone: false },
 };
 

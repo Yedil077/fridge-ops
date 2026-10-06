@@ -2,7 +2,7 @@
 chcp 65001 >nul
 cd /d "%~dp0"
 echo.
-echo  === Fridge Ops ===
+echo  === Apps Холодосов ===
 echo.
 where node >nul 2>nul
 if errorlevel 1 (
