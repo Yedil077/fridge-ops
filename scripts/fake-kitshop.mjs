@@ -18,7 +18,10 @@ const products = [
   { ProductId: 810010, ProductName: "Цезарь с курицей", Barcode: "4600000000011", VendorCode: "СЛ-01" },
 ];
 const stock = { 621583: { 810007: 7, 810010: 2 }, 621826: { 810007: 3 } };
-const fillUps = [];
+// one seeded write-off so the "unused dishes" report has something to show
+const fillUps = [
+  { FillupId: 400, ShopId: 621583, FillupType: 2, FillupSource: 2, FillupDateTime: null, UserName: "seed", Notes: "СПИСАНИЕ: истёк срок", Details: [{ DetailId: 4000, ProductId: 810010, Quantity: -2 }] },
+];
 let lastRequestId = 0;
 let seq = 500;
 
@@ -60,12 +63,22 @@ function handle(method, body) {
       for (const f of body.FillUps ?? []) s[f.ProductId] = Math.max(0, (s[f.ProductId] ?? 0) + f.Fillup);
       const id = ++seq;
       const sum = (body.FillUps ?? []).reduce((acc, f) => acc + Math.sign(f.Fillup), 0);
-      fillUps.push({ FillupId: id, ShopId: body.ShopId, FillupType: sum > 0 ? 1 : 2, FillupSource: 2, FillupDateTime: now(), UserName: FAKE.login, Notes: body.Notes ?? null });
+      fillUps.push({
+        FillupId: id, ShopId: body.ShopId, FillupType: sum > 0 ? 1 : 2, FillupSource: 2, FillupDateTime: now(), UserName: FAKE.login, Notes: body.Notes ?? null,
+        Details: (body.FillUps ?? []).map((f, i) => ({ DetailId: id * 10 + i, ProductId: f.ProductId, Quantity: f.Fillup })),
+      });
       console.log(`[fake-kitshop] MakeFillUp shop ${body.ShopId}: ${JSON.stringify(body.FillUps)} notes="${body.Notes}"`);
       return { ResultCode: 0, Response: "Успешное загрузка товаров" };
     }
     case "GetSales":
       return { ResultCode: 0, Sales: [{ SaleId: 1, ShopId: 621583, DeviceId: 1, SaleDateTime: now(), Sum: 450 }] };
+    case "GetSalesByProducts":
+      // pasta sells, caesar does not (for the "unused dishes" report rehearsal)
+      return { ResultCode: 0, SalesByProducts: [{ ProductId: 810007, ProductName: "Паста с говядиной", Price: 2500, Quantity: 12, TotalSum: 30000 }] };
+    case "GetFillUpById": {
+      const f = fillUps.find((x) => x.FillupId === body.Id);
+      return f ? { ResultCode: 0, FillUps: [{ ...f, Details: f.Details ?? [] }] } : { ResultCode: 100, Response: "не найдено" };
+    }
     case "GetFillUps": {
       const list = fillUps.filter((f) => !body.Filter?.ShopId || f.ShopId === body.Filter.ShopId);
       return list.length ? { ResultCode: 0, FillUps: list } : { ResultCode: 100, Response: "не найдено" };

@@ -4,6 +4,7 @@ import { useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
 import { Shell } from "@/components/Shell";
+import { UnusedProductsReport } from "@/components/admin/UnusedProductsReport";
 import { api } from "@/lib/client/api";
 import type { diagnostics } from "@/lib/server/kitshopAdmin";
 import type { StepResult, TestLeg } from "@/lib/kitshop-ops/writeTest";
@@ -103,6 +104,8 @@ export default function KitShopDiagnosticsPage() {
         </section>
 
         <RealApiTest d={d} busy={busy} run={() => post("real", { action: "real-test" })} runAuth={() => post("real-auth", { action: "real-test-auth" })} />
+
+        <UnusedProductsReport enabled={d.target.realDiagnostics || d.target.readEnabled} />
 
         {/* ── switches ── */}
         <Card title="KITSHOP WRITE">

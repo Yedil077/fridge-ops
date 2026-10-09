@@ -6,6 +6,8 @@ import {
   KitShopFillUpSchema,
   KitShopProductSchema,
   KitShopSaleSchema,
+  KitShopSalesByProductSchema,
+  type KitShopSalesByProduct,
   KitShopShopSchema,
   KitShopStockSchema,
   type KitShopFillUp,
@@ -43,6 +45,7 @@ export const READ_ENDPOINTS = {
   sales: { path: "GetSales", confirmed: true, note: "§3.22 продажи без позиций (позиции — GetSaleById), период ≤ 60 дней" },
   fillUps: { path: "GetFillUps", confirmed: true, note: "§3.19 операции загрузки и снятия (FillUps), период ≤ 60 дней" },
   fillUpById: { path: "GetFillUpById", confirmed: true, note: "§3.12 детали операции загрузки/снятия" },
+  salesByProducts: { path: "GetSalesByProducts", confirmed: true, note: "§3.26 продажи в разрезе товаров по всей компании, период ≤ 60 дней" },
 } as const satisfies Record<string, ReadEndpoint>;
 
 type EndpointName = keyof typeof READ_ENDPOINTS;
@@ -97,6 +100,11 @@ export class KitShopReadOnlyClient {
 
   async getFillUps(q: SalesQuery): Promise<KitShopFillUp[]> {
     return this.#list("fillUps", { Filter: this.#filter(q) }, "FillUps", KitShopFillUpSchema);
+  }
+
+  /** Company-wide quantity sold per product in [from, to] (≤ 60 days). The filter has no ShopId in the docs. */
+  async getSalesByProducts(q: { from: number; to: number }): Promise<KitShopSalesByProduct[]> {
+    return this.#list("salesByProducts", { Filter: this.#filter(q) }, "SalesByProducts", KitShopSalesByProductSchema);
   }
 
   async getFillUpById(id: string): Promise<KitShopFillUp | null> {

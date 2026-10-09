@@ -64,6 +64,18 @@ export const KitShopFillUpSchema = z
 
 export const KitShopSaleSchema = z.object({ SaleId: Id.optional(), ShopId: Id.optional() }).passthrough();
 
+/** §3.26 GetSalesByProducts — company-wide sales per product for a period (≤ 60 days). */
+export const KitShopSalesByProductSchema = z
+  .object({
+    ProductId: Id,
+    ProductName: z.string().nullish(),
+    Price: z.number().nullish(),
+    Quantity: z.number(),
+    TotalSum: z.number().nullish(),
+  })
+  .passthrough();
+export type KitShopSalesByProduct = z.infer<typeof KitShopSalesByProductSchema>;
+
 export type KitShopShop = z.infer<typeof KitShopShopSchema>;
 export type KitShopProduct = z.infer<typeof KitShopProductSchema>;
 export type KitShopStock = z.infer<typeof KitShopStockSchema>;
