@@ -51,6 +51,8 @@ export interface ProductRow {
   recommendation: Recommendation;
   reason: string;
   product: ReportProduct;
+  /** other KiT Shop products with the SAME name (different ProductId / barcode) — "ProductId (продано за 30 дн.)" */
+  sameName: string;
   sold30: number;
   sold90: number;
   soldAll: number;
@@ -95,8 +97,8 @@ export function analyzeProducts(input: ReportInput): ProductRow[] {
       }
     }
 
-  return input.products
-    .map((p): ProductRow => {
+  const rows = input.products
+    .map((p): Omit<ProductRow, "sameName"> => {
       let sold30 = 0;
       let sold90 = 0;
       let soldAll = 0;
@@ -116,7 +118,7 @@ export function analyzeProducts(input: ReportInput): ProductRow[] {
       const lastSaleTo: number | null = lastSale ? (lastSale as SalesWindow).to : null;
       const lastSaleFrom: number | null = lastSale ? (lastSale as SalesWindow).from : null;
       const daysWithout = lastSaleTo !== null ? Math.max(0, Math.floor((now - lastSaleTo) / DAY)) : null;
-      const row: Omit<ProductRow, "recommendation" | "reason"> = {
+      const row: Omit<ProductRow, "recommendation" | "reason" | "sameName"> = {
         product: p,
         sold30,
         sold90,
@@ -159,6 +161,23 @@ export function analyzeProducts(input: ReportInput): ProductRow[] {
       }
       return { ...row, recommendation, reason };
     })
+    ;
+
+  // several KiT Shop cards with the same name (old duplicate vs the one that sells) — say it explicitly
+  const key = (name: string) => name.toLowerCase().replace(/ё/g, "е").replace(/\s+/g, " ").trim();
+  const byName = new Map<string, typeof rows>();
+  for (const r of rows) byName.set(key(r.product.name), [...(byName.get(key(r.product.name)) ?? []), r]);
+  return rows
+    .map((r): ProductRow => {
+      const others = (byName.get(key(r.product.name)) ?? []).filter((o) => o !== r);
+      const sameName = others.map((o) => `${o.product.productId} (продано за 30 дн.: ${o.sold30})`).join("; ");
+      const sellingTwin = others.find((o) => o.sold30 > 0 || o.stockNow > 0);
+      const reason =
+        sellingTwin && r.recommendation !== "ОСТАВИТЬ"
+          ? `ДУБЛЬ: такое же название есть у товара ${sellingTwin.product.productId} (штрихкод ${sellingTwin.product.barcode ?? "—"}), он продаётся — удалять только эту карточку ${r.product.productId}. ${r.reason}`
+          : r.reason;
+      return { ...r, reason, sameName };
+    })
     .sort((a, b) => order(a.recommendation) - order(b.recommendation) || (b.daysWithoutSales ?? 9999) - (a.daysWithoutSales ?? 9999) || a.product.name.localeCompare(b.product.name, "ru"));
 }
 
@@ -185,8 +204,9 @@ const HEADER = [
   "Из них с пометкой «списание», шт.",
   "Доля снятий от загруженного, %",
   "Последняя загрузка",
+  "Другие товары с таким же названием (ProductId)",
 ];
-const WIDTHS = [14, 60, 14, 36, 16, 14, 9, 11, 11, 12, 24, 14, 11, 11, 12, 11, 10, 14, 12, 14];
+const WIDTHS = [14, 60, 14, 36, 16, 14, 9, 11, 11, 12, 24, 14, 11, 11, 12, 11, 10, 14, 12, 14, 30];
 
 function rowCells(r: ProductRow, spanStart: number): CellValue[] {
   return [
@@ -210,6 +230,7 @@ function rowCells(r: ProductRow, spanStart: number): CellValue[] {
     r.writeOffTagged,
     r.removedShare !== null ? Math.round(r.removedShare * 100) : "",
     fmt(r.lastLoaded),
+    r.sameName,
   ];
 }
 
@@ -238,6 +259,7 @@ export function buildUnusedProductsXlsx(input: ReportInput, rows = analyzeProduc
     ["2", "В API KiT Shop нет отдельного типа «списание»: «Снято» — все уменьшения остатка (перенос в другую точку, возврат, списание). Колонка «с пометкой списание» — операции, в примечании которых есть слово «списание»."],
     ["3", "Дата последней продажи известна с точностью до 14-дневного периода (так KiT Shop отдаёт продажи по товарам)."],
     ["4", "Новые товары (заведены недавно) могут попасть в «ПРОВЕРИТЬ» — смотрите на дату последней загрузки."],
+    ["5", "В KiT Shop бывает несколько карточек с одинаковым названием (разные ProductId и штрихкоды). Отчёт считает каждую карточку отдельно; строки с пометкой «ДУБЛЬ» — старая карточка, удалять только её, а не продающуюся. Сверяйте по ProductId и штрихкоду."],
   ];
   return buildXlsx([
     { name: "Для менеджеров", rows: [HEADER, ...action.map((r) => rowCells(r, spanStart))], widths: WIDTHS },

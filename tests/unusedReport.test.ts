@@ -55,6 +55,16 @@ test("decision rules: delete / check / keep with a plain reason", () => {
   assert.match(rows.get("6")!.reason, /последние 30 дней/);
 });
 
+test("an old card with the same name as a selling product is marked as ДУБЛЬ", () => {
+  const inp = input();
+  inp.products.push({ ...p("7", "Хит продаж"), barcode: "4600000000777" }); // old card: same name, never sold
+  const rows = new Map(analyzeProducts(inp).map((r) => [r.product.productId, r]));
+  assert.equal(rows.get("7")!.recommendation, "УДАЛИТЬ");
+  assert.match(rows.get("7")!.reason, /^ДУБЛЬ: такое же название есть у товара 5 \(штрихкод 4605\), он продаётся — удалять только эту карточку 7\./);
+  assert.equal(rows.get("5")!.recommendation, "ОСТАВИТЬ", "the selling card is untouched");
+  assert.match(rows.get("5")!.sameName, /^7 \(продано за 30 дн\.: 0\)$/);
+});
+
 test("delete rows come first, most stale first", () => {
   const order = analyzeProducts(input()).map((r) => r.recommendation);
   assert.deepEqual(order.slice(0, 2), ["УДАЛИТЬ", "УДАЛИТЬ"]);
