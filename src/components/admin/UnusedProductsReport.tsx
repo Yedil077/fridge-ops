@@ -12,12 +12,23 @@ interface Status {
   step: string;
   progress: number;
   error: string | null;
-  summary: { delete: number; check: number; keep: number; total: number } | null;
+  summary: {
+    delete: number;
+    check: number;
+    fresh: number;
+    keep: number;
+    total: number;
+    dataReadAt: number;
+    endpoints: { endpoint: string; ok: number; failed: number; note: string }[];
+    complete: { products: boolean; sales: boolean; stocks: boolean; fillUps: boolean };
+  } | null;
   ready: boolean;
 }
 
 const URL_ = "/api/admin/reports/unused-products";
 const fmt = (ms: number | null) => (ms ? new Date(ms).toLocaleString("ru-RU", { timeZone: "Asia/Almaty" }) : "—");
+/** server wall-clock values already are Almaty time ("UTC fields = local") */
+const fmtWall = (ms: number | null) => (ms ? `${new Date(ms).toLocaleString("ru-RU", { timeZone: "UTC" })} (Алматы)` : "—");
 
 /** Excel for managers: dishes that are no longer used in KiT Shop (real data, read-only). */
 export function UnusedProductsReport({ enabled }: { enabled: boolean }) {
@@ -41,7 +52,7 @@ export function UnusedProductsReport({ enabled }: { enabled: boolean }) {
   return (
     <section className="card p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="label">Отчёт для менеджеров · неиспользуемые блюда (Excel)</div>
+        <div className="label">Отчёт для менеджеров · что можно удалить из KiT Shop (Excel)</div>
         <div className="flex flex-wrap gap-2">
           <button
             onClick={start}
@@ -58,8 +69,8 @@ export function UnusedProductsReport({ enabled }: { enabled: boolean }) {
         </div>
       </div>
       <p className="mt-1 text-[12px] text-ink-3">
-        Из реального KiT Shop, только чтение: каталог, продажи по товарам за ~6 месяцев, остатки во всех точках, загрузки и снятия за 30 дней.
-        Для каждого блюда — рекомендация (УДАЛИТЬ / ПРОВЕРИТЬ / ОСТАВИТЬ), причина, с какого числа не продаётся, остатки и снятия. Ничего не удаляется автоматически.
+        Каждый раз свежее чтение реального KiT Shop: каталог, продажи по товарам за ~6 месяцев, остатки во всех точках, все загрузки и снятия за 60 дней.
+        По полным названиям: ТОЧНО УДАЛИТЬ (только при полной уверенности), ПРОВЕРИТЬ, ОСТАВИТЬ, НОВЫЕ. Новые товары и всё, что продавалось, загружалось или лежит в остатке, не удаляется. Ничего не удаляется автоматически.
         {!enabled && " Сейчас выключено: нужен доступ к KiT Shop на сервере (REAL_DIAGNOSTICS=true)."}
       </p>
       {err && <p className="mt-2 rounded-lg bg-crit/15 px-3 py-2 text-[13px] text-crit-ink">{err}</p>}
@@ -69,18 +80,26 @@ export function UnusedProductsReport({ enabled }: { enabled: boolean }) {
             <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${s.progress}%` }} />
           </div>
           <div className="mt-1 text-[12px] text-ink-3">
-            {s.progress}% · {s.step} · запущен {fmt(s.startedAt)}. Обычно 2–6 минут — страницу можно не закрывать.
+            {s.progress}% · {s.step} · запущен {fmt(s.startedAt)}. Может занять 10–25 минут (читаются все загрузки за 60 дней) — держите страницу открытой.
           </div>
         </div>
       )}
       {s?.status === "error" && <p className="mt-2 rounded-lg bg-crit/15 px-3 py-2 text-[13px] text-crit-ink">Ошибка на шаге «{s.step}»: {s.error}</p>}
       {s?.status === "done" && s.summary && (
-        <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
-          <Cell label="УДАЛИТЬ" v={s.summary.delete} tone="text-crit-ink" />
-          <Cell label="ПРОВЕРИТЬ" v={s.summary.check} tone="text-warn" />
-          <Cell label="ОСТАВИТЬ" v={s.summary.keep} tone="text-good-ink" />
-          <Cell label={`всего · ${fmt(s.finishedAt)}`} v={s.summary.total} tone="text-ink" />
-        </div>
+        <>
+          <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-5">
+            <Cell label="ТОЧНО УДАЛИТЬ" v={s.summary.delete} tone="text-crit-ink" />
+            <Cell label="ПРОВЕРИТЬ" v={s.summary.check} tone="text-warn" />
+            <Cell label="НОВЫЕ" v={s.summary.fresh} tone="text-accent" />
+            <Cell label="ОСТАВИТЬ" v={s.summary.keep} tone="text-good-ink" />
+            <Cell label="всего названий" v={s.summary.total} tone="text-ink" />
+          </div>
+          <div className="mt-2 text-[12px] text-ink-3">
+            Данные KiT Shop на {fmtWall(s.summary.dataReadAt)} ·{" "}
+            {s.summary.endpoints.map((e) => `${e.endpoint}: ${e.failed ? `ошибок ${e.failed} из ${e.ok + e.failed}` : `OK (${e.ok})`}`).join(" · ")}
+            {!Object.values(s.summary.complete).every(Boolean) && <span className="text-warn"> · данные неполные — «ТОЧНО УДАЛИТЬ» не выдаётся</span>}
+          </div>
+        </>
       )}
     </section>
   );
