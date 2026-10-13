@@ -18,6 +18,7 @@ import { adapterFor, catalogAdapter, kitshopReadOnly, mockAdapter, trustAbsent, 
 import { addProductBody } from "../kitshop-ops/adapters";
 import type { CatalogProductInput } from "../kitshop-ops/types";
 import { newId } from "./pin";
+import { autoUnusedReport } from "./unusedReport";
 
 /**
  * Server runtime: owns the data source (real KiT Shop copy in KITSHOP mode, simulator only in MOCK/dev mode), our app state,
@@ -121,6 +122,10 @@ class Runtime {
     if (rt.mode === "kitshop" || rt.shadow) kitshopLive(); // starts the 5-minute read-only sync
     rt.save();
     await rt.saving;
+    // "что удалить из KiT Shop" Excel: rebuilt by the server once a day (read only), stored in the database
+    setInterval(() => {
+      autoUnusedReport().catch((e) => console.error("[apps-holodosov] automatic report failed to start:", e instanceof Error ? e.message : e));
+    }, 60_000).unref?.();
     // background pass for KiT Shop write operations — never in read-only mode (nothing may be sent to KiT Shop)
     if (!rt.readOnly)
       setInterval(() => {

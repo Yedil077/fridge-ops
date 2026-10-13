@@ -98,6 +98,11 @@ export function MobileShell({ children, now, title, back }: { children: ReactNod
                 </Link>
               </>
             )}
+            {atLeast(me, "MANAGER") && (
+              <a href="/api/admin/reports/unused-products?download=1" className="block min-h-12 px-4 py-3.5 text-[15px] active:bg-surface-3">
+                📄 Что удалить из KiT Shop (Excel)
+              </a>
+            )}
             {me?.rewards && <Link href="/m/rating" className="block min-h-12 px-4 py-3.5 text-[15px] active:bg-surface-3">🏆 Награды</Link>}
             {atLeast(me, "MANAGER") && (
               <button

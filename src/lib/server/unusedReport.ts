@@ -14,6 +14,7 @@ import {
 } from "../reports/unusedProducts";
 import { wallClockNow } from "../time";
 import { kitshopServerInfo, kitshopTransport } from "./kitshopWrite";
+import { loadReport, saveReport } from "./reportStore";
 import { HttpError } from "./runtime";
 
 /**
@@ -21,6 +22,10 @@ import { HttpError } from "./runtime";
  * Calls: GetProducts, GetSalesByProducts (13 × 14 days), GetShops + GetShopStocks (every shop),
  * GetFillUps (60 days) + GetFillUpById for every fill-up. Never a write, never simulator data, never an old Excel.
  * A failing endpoint does not stop the job: it is logged and the affected decisions are downgraded (no "УДАЛИТЬ").
+ *
+ * The finished file is stored in OUR database (report_files) — a sleeping / restarted server still serves the last one.
+ * The server rebuilds it by itself once a day (UNUSED_REPORT_AUTO, default on; UNUSED_REPORT_EVERY_HOURS, default 24),
+ * so nobody has to remember to press the button or wait 10–25 minutes.
  */
 
 const DAY = 86_400_000;
@@ -50,30 +55,96 @@ interface JobState {
   file: Uint8Array | null;
   fileName: string | null;
   summary: Summary | null;
+  /** last finished report (memory or database) — stays downloadable while a new one is being built */
+  last: { name: string; data: Uint8Array; summary: Summary | null; finishedAt: number; startedBy: string | null } | null;
+  lastLoaded: boolean;
+  lastAutoAttempt: number | null;
 }
 
 const g = globalThis as unknown as { __unusedReport?: JobState };
 const job = (): JobState =>
-  (g.__unusedReport ??= { status: "idle", startedAt: null, finishedAt: null, startedBy: null, step: "", progress: 0, error: null, file: null, fileName: null, summary: null });
+  (g.__unusedReport ??= {
+    status: "idle",
+    startedAt: null,
+    finishedAt: null,
+    startedBy: null,
+    step: "",
+    progress: 0,
+    error: null,
+    file: null,
+    fileName: null,
+    summary: null,
+    last: null,
+    lastLoaded: false,
+    lastAutoAttempt: null,
+  });
 
-export function reportStatus() {
-  const j = job();
-  return { status: j.status, startedAt: j.startedAt, finishedAt: j.finishedAt, startedBy: j.startedBy, step: j.step, progress: j.progress, error: j.error, summary: j.summary, ready: !!j.file };
+const AUTO = () => process.env.UNUSED_REPORT_AUTO !== "false";
+const EVERY_MS = () => Math.max(1, Number(process.env.UNUSED_REPORT_EVERY_HOURS) || 24) * 3_600_000;
+
+async function loadLast(j: JobState) {
+  if (j.lastLoaded) return;
+  j.lastLoaded = true;
+  const r = await loadReport();
+  if (r && (!j.last || r.finishedAt > j.last.finishedAt)) j.last = { ...r, summary: (r.summary as Summary | null) ?? null };
 }
 
-export function reportFile(): { data: Uint8Array; name: string } | null {
+export async function reportStatus() {
   const j = job();
-  return j.file && j.fileName ? { data: j.file, name: j.fileName } : null;
+  await loadLast(j);
+  const nextAutoAt = AUTO() && readBlocked() === null ? (j.last ? j.last.finishedAt + EVERY_MS() : Date.now()) : null;
+  return {
+    status: j.status,
+    startedAt: j.startedAt,
+    finishedAt: j.finishedAt,
+    startedBy: j.startedBy,
+    step: j.step,
+    progress: j.progress,
+    error: j.error,
+    // the summary shown is the one of the downloadable file
+    summary: j.last?.summary ?? null,
+    ready: !!j.last,
+    last: j.last ? { name: j.last.name, finishedAt: j.last.finishedAt, startedBy: j.last.startedBy } : null,
+    auto: { on: AUTO(), everyHours: EVERY_MS() / 3_600_000, nextAt: nextAutoAt },
+  };
 }
 
-export function startUnusedReport(user: string) {
+export async function reportFile(): Promise<{ data: Uint8Array; name: string } | null> {
+  const j = job();
+  await loadLast(j);
+  return j.last ? { data: j.last.data, name: j.last.name } : null;
+}
+
+function readBlocked(): string | null {
   const s = kitshopServerInfo();
-  if (process.env.KITSHOP_REAL_DIAGNOSTICS !== "true" && !s.config.enabled)
-    throw new HttpError(409, "Чтение KiT Shop выключено: нужен KITSHOP_REAL_DIAGNOSTICS=true (только чтение) в настройках сервера");
-  if (!s.config.companyId || !s.config.login || !s.config.password) throw new HttpError(409, "Не заданы KITSHOP_COMPANY_ID / KITSHOP_LOGIN / KITSHOP_PASSWORD");
+  if (process.env.KITSHOP_REAL_DIAGNOSTICS !== "true" && !s.config.enabled) return "Чтение KiT Shop выключено: нужен KITSHOP_REAL_DIAGNOSTICS=true (только чтение) в настройках сервера";
+  if (!s.config.companyId || !s.config.login || !s.config.password) return "Не заданы KITSHOP_COMPANY_ID / KITSHOP_LOGIN / KITSHOP_PASSWORD";
+  return null;
+}
+
+/**
+ * Called by the server every minute and by /api/health: rebuilds the report when the last one is older than
+ * UNUSED_REPORT_EVERY_HOURS. A failed attempt is retried after 6 hours, not in a loop.
+ */
+export async function autoUnusedReport(): Promise<void> {
+  if (!AUTO() || readBlocked() !== null) return;
+  const j = job();
+  if (j.status === "running") return;
+  await loadLast(j);
+  const now = Date.now();
+  if (j.last && now - j.last.finishedAt < EVERY_MS()) return;
+  if (j.lastAutoAttempt && now - j.lastAutoAttempt < 6 * 3_600_000) return;
+  j.lastAutoAttempt = now;
+  console.info("[apps-holodosov] unused products report: automatic rebuild");
+  await startUnusedReport("авто (раз в сутки)");
+}
+
+export async function startUnusedReport(user: string) {
+  const blocked = readBlocked();
+  if (blocked) throw new HttpError(409, blocked);
   const j = job();
   if (j.status === "running") return reportStatus();
-  // a previous file is never served as fresh: drop it before the new read
+  // the previous file stays downloadable (with its own date) until the new one is finished and checked
   Object.assign(j, { status: "running", startedAt: Date.now(), finishedAt: null, startedBy: user, step: "старт", progress: 0, error: null, summary: null, file: null, fileName: null });
   void run(j).catch((e) => {
     j.status = "error";
@@ -204,8 +275,12 @@ async function run(j: JobState) {
     endpoints: input.endpoints,
     complete,
   };
+  j.finishedAt = Date.now();
+  j.last = { name: j.fileName, data: j.file, summary: j.summary, finishedAt: j.finishedAt, startedBy: j.startedBy };
+  await saveReport({ name: j.fileName, data: j.file, summary: j.summary, finishedAt: j.finishedAt, startedBy: j.startedBy }).catch((e) =>
+    console.error("[apps-holodosov] could not store the report in the database:", e instanceof Error ? e.message : e),
+  );
   j.status = "done";
   j.progress = 100;
   j.step = "готово";
-  j.finishedAt = Date.now();
 }
