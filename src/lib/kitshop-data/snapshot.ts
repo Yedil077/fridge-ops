@@ -2,7 +2,7 @@ import { CATEGORIES } from "../domain/categories";
 import type { Fridge, NetworkSnapshot, Product } from "../domain/types";
 import { buildTravelMatrix } from "../engine/distance";
 import { dayNumber, minuteOfDay } from "../time";
-import { categorize } from "@/services/kitshop/adapter";
+import { categorizeProduct } from "@/services/kitshop/adapter";
 import type { KsDataset } from "./dataset";
 
 /**
@@ -41,16 +41,21 @@ export function buildKitShopSnapshot(ds: KsDataset, configured: Fridge[], now: n
   }
   for (const [shopId, m] of ds.stock) if (fIdx.has(shopId)) for (const [pid, q] of m) if (q > 0 && !used.has(pid)) used.set(pid, { qty: 0, price: null, name: null });
   const products: Product[] = [];
+  const categorizedBy = { group: 0, name: 0 };
   for (const [pid, u] of used) {
     const cat = ds.products.get(pid);
     const name = cat?.name ?? `Товар #${pid}`;
     const price = cat?.price ?? u.price;
     if (!isFood(name, price)) continue;
+    // category: KiT Shop product group first, the dish name only as a fallback
+    const group = cat?.groupId !== null && cat?.groupId !== undefined ? ds.groups.get(cat.groupId)?.name : null;
+    const c = categorizeProduct(name, group);
+    categorizedBy[c.by]++;
     products.push({
       id: `K${pid}`,
       externalId: pid,
       name: name.replace(/\s+/g, " ").trim(),
-      categoryId: categorize(name),
+      categoryId: c.category,
       price: price ?? 0,
       sku: cat?.vendorCode || pid.slice(-5),
       imageUrl: null,
@@ -123,5 +128,6 @@ export function buildKitShopSnapshot(ds: KsDataset, configured: Fridge[], now: n
     travelMinutes: buildTravelMatrix(fridges),
     version: `ks:${ds.version}:${Math.floor(now / 900_000)}`,
     source: "kitshop",
+    categorizedBy,
   };
 }

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Pool } from "pg";
-import { KsDataset, emptySyncState, type KsPosition, type KsProduct, type KsSale, type KsShop, type KsStock, type KsSyncState } from "./dataset";
+import { KsDataset, emptySyncState, type KsGroup, type KsPosition, type KsProduct, type KsSale, type KsShop, type KsStock, type KsSyncState } from "./dataset";
 
 /**
  * Persistence of the KiT Shop read-only copy.
@@ -15,9 +15,12 @@ export interface KsRepo {
   load(ds: KsDataset): Promise<void>;
   saveShops(shops: KsShop[]): Promise<void>;
   saveProducts(products: KsProduct[]): Promise<void>;
+  saveGroups(groups: KsGroup[]): Promise<void>;
   replaceStock(shopId: string, rows: KsStock[], at: number): Promise<void>;
   saveSales(sales: KsSale[]): Promise<void>;
   savePositions(saleId: string, positions: KsPosition[]): Promise<void>;
+  /** GetSaleById failed for this receipt: remember the attempt, retry after retryAt */
+  markDetailFailed(saleId: string, failures: number, retryAt: number): Promise<void>;
   saveState(state: KsSyncState): Promise<void>;
 }
 
@@ -26,9 +29,11 @@ export class MemoryKsRepo implements KsRepo {
   async load() {}
   async saveShops() {}
   async saveProducts() {}
+  async saveGroups() {}
   async replaceStock() {}
   async saveSales() {}
   async savePositions() {}
+  async markDetailFailed() {}
   async saveState() {}
 }
 
@@ -45,7 +50,10 @@ CREATE TABLE IF NOT EXISTS ks_products (
 CREATE TABLE IF NOT EXISTS ks_sales (
   sale_id BIGINT PRIMARY KEY, shop_id BIGINT NOT NULL, sold_at BIGINT NOT NULL, total NUMERIC, detailed BOOLEAN NOT NULL DEFAULT false
 );
+ALTER TABLE ks_sales ADD COLUMN IF NOT EXISTS detail_failures INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE ks_sales ADD COLUMN IF NOT EXISTS retry_at BIGINT;
 CREATE INDEX IF NOT EXISTS ks_sales_sold_at ON ks_sales (sold_at);
+CREATE TABLE IF NOT EXISTS ks_groups (group_id INTEGER PRIMARY KEY, name TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT now());
 CREATE TABLE IF NOT EXISTS ks_positions (
   sale_id BIGINT NOT NULL, position_id BIGINT NOT NULL, product_id BIGINT NOT NULL, qty NUMERIC NOT NULL, price NUMERIC,
   PRIMARY KEY (sale_id, position_id)
@@ -69,14 +77,16 @@ export class PgKsRepo implements KsRepo {
 
   async load(ds: KsDataset) {
     await this.ready;
-    const [shops, products, sales, positions, stock, state] = await Promise.all([
+    const [shops, products, sales, positions, stock, state, groups] = await Promise.all([
       this.pool.query("SELECT shop_id, name, stocks_accounting FROM ks_shops"),
       this.pool.query("SELECT product_id, name, barcode, vendor_code, price, group_id FROM ks_products"),
-      this.pool.query("SELECT sale_id, shop_id, sold_at, total, detailed FROM ks_sales"),
+      this.pool.query("SELECT sale_id, shop_id, sold_at, total, detailed, detail_failures, retry_at FROM ks_sales"),
       this.pool.query("SELECT sale_id, position_id, product_id, qty, price FROM ks_positions"),
       this.pool.query("SELECT shop_id, product_id, qty, synced_at FROM ks_stock"),
       this.pool.query("SELECT value FROM ks_sync_state WHERE key = 'sync'"),
+      this.pool.query("SELECT group_id, name FROM ks_groups"),
     ]);
+    for (const r of groups.rows) ds.groups.set(Number(r.group_id), { groupId: Number(r.group_id), name: r.name });
     for (const r of shops.rows) ds.shops.set(String(r.shop_id), { shopId: String(r.shop_id), name: r.name, stocksAccounting: r.stocks_accounting });
     for (const r of products.rows)
       ds.products.set(String(r.product_id), {
@@ -88,7 +98,15 @@ export class PgKsRepo implements KsRepo {
         groupId: num(r.group_id),
       });
     for (const r of sales.rows)
-      ds.sales.set(String(r.sale_id), { saleId: String(r.sale_id), shopId: String(r.shop_id), soldAt: Number(r.sold_at), total: num(r.total), detailed: r.detailed });
+      ds.sales.set(String(r.sale_id), {
+        saleId: String(r.sale_id),
+        shopId: String(r.shop_id),
+        soldAt: Number(r.sold_at),
+        total: num(r.total),
+        detailed: r.detailed,
+        detailFailures: Number(r.detail_failures ?? 0),
+        retryAt: num(r.retry_at),
+      });
     for (const r of positions.rows) {
       const id = String(r.sale_id);
       const list = ds.positions.get(id) ?? [];
@@ -127,6 +145,10 @@ export class PgKsRepo implements KsRepo {
       "UPDATE SET name = EXCLUDED.name, barcode = EXCLUDED.barcode, vendor_code = EXCLUDED.vendor_code, price = EXCLUDED.price, group_id = EXCLUDED.group_id, updated_at = now()");
   }
 
+  async saveGroups(groups: KsGroup[]) {
+    await this.upsert("ks_groups", ["group_id", "name"], groups.map((g) => [g.groupId, g.name]), "group_id", "UPDATE SET name = EXCLUDED.name, updated_at = now()");
+  }
+
   async replaceStock(shopId: string, rows: KsStock[], at: number) {
     await this.ready;
     const client = await this.pool.connect();
@@ -158,7 +180,12 @@ export class PgKsRepo implements KsRepo {
       await this.upsert("ks_positions", ["sale_id", "position_id", "product_id", "qty", "price"],
         positions.map((p) => [p.saleId, p.positionId, p.productId, p.qty, p.price]), "sale_id, position_id",
         "UPDATE SET product_id = EXCLUDED.product_id, qty = EXCLUDED.qty, price = EXCLUDED.price");
-    await this.pool.query("UPDATE ks_sales SET detailed = true WHERE sale_id = $1", [saleId]);
+    await this.pool.query("UPDATE ks_sales SET detailed = true, retry_at = NULL WHERE sale_id = $1", [saleId]);
+  }
+
+  async markDetailFailed(saleId: string, failures: number, retryAt: number) {
+    await this.ready;
+    await this.pool.query("UPDATE ks_sales SET detail_failures = $2, retry_at = $3 WHERE sale_id = $1", [saleId, failures, retryAt]);
   }
 
   async saveState(state: KsSyncState) {
@@ -188,6 +215,7 @@ export class FileKsRepo implements KsRepo {
       const raw = JSON.parse(fs.readFileSync(this.file, "utf8"));
       for (const s of raw.shops ?? []) ds.shops.set(s.shopId, s);
       for (const p of raw.products ?? []) ds.products.set(p.productId, p);
+      for (const g of raw.groups ?? []) ds.groups.set(g.groupId, g);
       for (const s of raw.sales ?? []) ds.sales.set(s.saleId, s);
       for (const p of raw.positions ?? []) ds.positions.set(p.saleId, [...(ds.positions.get(p.saleId) ?? []), p]);
       for (const r of raw.stock ?? []) {
@@ -212,6 +240,7 @@ export class FileKsRepo implements KsRepo {
       const data = {
         shops: [...ds.shops.values()],
         products: [...ds.products.values()],
+        groups: [...ds.groups.values()],
         sales: [...ds.sales.values()],
         positions: [...ds.positions.values()].flat(),
         stock: [...ds.stock.entries()].flatMap(([shopId, m]) => [...m.entries()].map(([productId, qty]) => ({ shopId, productId, qty }))),
@@ -227,6 +256,12 @@ export class FileKsRepo implements KsRepo {
     this.schedule();
   }
   async saveProducts() {
+    this.schedule();
+  }
+  async saveGroups() {
+    this.schedule();
+  }
+  async markDetailFailed() {
     this.schedule();
   }
   async replaceStock() {

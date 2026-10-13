@@ -99,6 +99,10 @@ export const KitShopSalesByProductSchema = z
   .passthrough();
 export type KitShopSalesByProduct = z.infer<typeof KitShopSalesByProductSchema>;
 
+/** §3.5 GetProductGroups — product groups of the company (category of a product = its GroupId). */
+export const KitShopProductGroupSchema = z.object({ GroupId: z.number(), GroupName: z.string(), Notes: z.string().nullish() }).passthrough();
+export type KitShopProductGroup = z.infer<typeof KitShopProductGroupSchema>;
+
 export type KitShopShop = z.infer<typeof KitShopShopSchema>;
 export type KitShopProduct = z.infer<typeof KitShopProductSchema>;
 export type KitShopStock = z.infer<typeof KitShopStockSchema>;

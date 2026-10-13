@@ -4,7 +4,7 @@ import type { Fridge, NetworkSnapshot } from "../domain/types";
 import { KsDataset } from "../kitshop-data/dataset";
 import { FileKsRepo, PgKsRepo, type KsRepo } from "../kitshop-data/repo";
 import { buildKitShopSnapshot } from "../kitshop-data/snapshot";
-import { KitShopSync, type TickResult } from "../kitshop-data/sync";
+import { KitShopSync, syncOptionsFromEnv, type SyncDeps, type SyncOptions, type TickResult } from "../kitshop-data/sync";
 import { configuredFridges } from "../simulator/model";
 import { dayNumber, wallClockNow } from "../time";
 import { KitShopNotReadyError } from "@/services/kitshop/kitshopClient";
@@ -37,11 +37,25 @@ export interface LiveStatus {
   lastErrorAt: number | null;
   counts: ReturnType<KsDataset["counts"]>;
   backlog: { undetailed: number; backfillDaysLeft: number };
+  progress: ReturnType<KitShopSync["progress"]>;
+  errors24h: { count: number; last: { at: number; step: string; error: string }[] };
+  categorizedBy: { group: number; name: number } | null;
   lastTick: TickResult | null;
   running: boolean;
   now: number;
   /** our configured points ↔ KiT Shop shops */
-  fridges: { id: string; name: string; shopId: string; inKitShop: boolean; stockItems: number; stockAt: number | null; lastSaleAt: number | null }[];
+  fridges: {
+    id: string;
+    name: string;
+    shopId: string;
+    inKitShop: boolean;
+    stockItems: number;
+    stockAt: number | null;
+    /** receipts today / units today (units only from receipts already detailed through GetSaleById) */
+    receiptsToday: number;
+    unitsToday: number;
+    lastSaleAt: number | null;
+  }[];
 }
 
 function createRepo(): KsRepo {
@@ -68,29 +82,45 @@ export class KitShopLive {
   private cache: { key: string; snap: NetworkSnapshot } | null = null;
   private configured: Fridge[];
 
-  constructor() {
-    this.repo = createRepo();
-    this.configured = configuredFridges(dayNumber(wallClockNow(TZ)));
+  private now: () => number;
+
+  /** deps are injectable for tests (PGlite repo, fake reader, fixed clock); production uses env + the shared transport */
+  constructor(deps: { repo?: KsRepo; reader?: SyncDeps["reader"]; now?: () => number; options?: Partial<SyncOptions>; sleep?: SyncDeps["sleep"] } = {}) {
+    this.now = deps.now ?? (() => wallClockNow(TZ));
+    this.repo = deps.repo ?? createRepo();
+    this.configured = configuredFridges(dayNumber(this.now()));
     const offsetMin = Number(process.env.KITSHOP_TIME_OFFSET_MINUTES ?? 0) || 0;
     this.sync = new KitShopSync({
-      reader: kitshopReader(),
+      reader: deps.reader ?? kitshopReader(),
       repo: this.repo,
       ds: this.ds,
-      now: () => wallClockNow(TZ),
+      now: this.now,
       ourShopIds: this.configured.map((f) => f.externalId).filter((id) => /^\d+$/.test(id)),
       timeOffsetMs: offsetMin * 60_000,
+      // KITSHOP_BACKFILL_DAYS / _CONCURRENCY / _DELAY_MS — gentle defaults (180 days, 1 request at a time, 300 ms pause)
+      options: { ...syncOptionsFromEnv(), ...(deps.options ?? {}) },
+      sleep: deps.sleep,
     });
     this.loaded = this.repo.load(this.ds).catch((e) => {
       console.error("[kitshop-sync] could not load the cache:", e instanceof Error ? e.message : e);
     });
   }
 
+  /** resolves when the cache (ks_* tables) has been loaded */
+  async ready() {
+    await this.loaded;
+  }
+
   /** Starts the background loop (first tick right after the cache is loaded). */
   start() {
+    this.started = true;
     void this.loaded.then(() => this.schedule(1_000));
   }
 
+  private started = false;
+
   private schedule(ms: number) {
+    if (!this.started) return;
     if (this.timer) clearTimeout(this.timer);
     this.timer = setTimeout(() => void this.runTick(), ms);
     this.timer.unref?.();
@@ -117,12 +147,13 @@ export class KitShopLive {
   /** Health ping: trigger a tick if the loop fell asleep (free hosting pauses timers while idle). */
   nudge() {
     const last = this.ds.state.lastSalesSyncAt;
-    if (!this.sync.running && (last === null || wallClockNow(TZ) - last > SYNC_EVERY_MS + 60_000)) void this.runTick();
+    if (!this.sync.running && (last === null || this.now() - last > SYNC_EVERY_MS + 60_000)) void this.runTick();
   }
 
-  label(now = wallClockNow(TZ)): DataLabel {
+  label(now = this.now()): DataLabel {
     const st = this.ds.state;
-    if (st.lastSuccessAt === null) return this.ds.sales.size || this.ds.stock.size ? "CACHE" : "LOADING";
+    // the first sync has not read stock / receipts yet (catalog alone is not data)
+    if (st.lastSuccessAt === null) return "LOADING";
     const failedLast = this.sync.lastTick ? !this.sync.lastTick.steps.some((s) => s.ok && (s.step.startsWith("GetShopStocks") || s.step === "GetSales (новые)")) : false;
     return now - st.lastSuccessAt > STALE_AFTER_MS || failedLast ? "CACHE" : "KITSHOP REAL";
   }
@@ -130,7 +161,8 @@ export class KitShopLive {
   /** Snapshot for the engine. Empty cache → "data is loading" (never the simulator). */
   async snapshot(): Promise<NetworkSnapshot> {
     await this.loaded;
-    if (!this.ds.shops.size && !this.ds.sales.size && !this.ds.stock.size) {
+    // cold start: nothing is shown until the first sync really read stock / receipts (persisted, so a restart shows the cache at once)
+    if (this.ds.state.lastSuccessAt === null) {
       const err = this.ds.state.lastError;
       throw new KitShopNotReadyError(
         err
@@ -138,7 +170,7 @@ export class KitShopLive {
           : "Данные KiT Shop загружаются (первая синхронизация). Обновите страницу через минуту. Данные симулятора НЕ подставляются.",
       );
     }
-    const now = wallClockNow(TZ);
+    const now = this.now();
     const key = `${this.ds.version}:${Math.floor(now / 60_000)}`;
     if (this.cache?.key === key) return this.cache.snap;
     const snap = buildKitShopSnapshot(this.ds, this.configured, now);
@@ -150,7 +182,16 @@ export class KitShopLive {
     await this.loaded;
     const st = this.ds.state;
     const lastSale = new Map<string, number>();
-    for (const s of this.ds.sales.values()) if (s.soldAt > (lastSale.get(s.shopId) ?? 0)) lastSale.set(s.shopId, s.soldAt);
+    const today = new Map<string, { receipts: number; units: number }>();
+    const todayDay = dayNumber(this.now());
+    for (const s of this.ds.sales.values()) {
+      if (s.soldAt > (lastSale.get(s.shopId) ?? 0)) lastSale.set(s.shopId, s.soldAt);
+      if (dayNumber(s.soldAt) !== todayDay) continue;
+      const t = today.get(s.shopId) ?? { receipts: 0, units: 0 };
+      t.receipts++;
+      for (const p of this.ds.positions.get(s.saleId) ?? []) t.units += p.qty;
+      today.set(s.shopId, t);
+    }
     return {
       label: this.label(),
       repo: this.repo.kind,
@@ -161,11 +202,17 @@ export class KitShopLive {
       lastFillupsSyncAt: st.lastFillupsSyncAt,
       lastError: st.lastError,
       lastErrorAt: st.lastErrorAt,
-      counts: this.ds.counts(),
+      counts: this.ds.counts(this.now()),
       backlog: this.sync.backlog(),
+      progress: this.sync.progress(),
+      errors24h: (() => {
+        const list = (st.errors ?? []).filter((e) => e.at > this.now() - 86_400_000);
+        return { count: list.length, last: list.slice(-5).reverse() };
+      })(),
+      categorizedBy: this.cache?.snap.categorizedBy ?? null,
       lastTick: this.sync.lastTick,
       running: this.sync.running,
-      now: wallClockNow(TZ),
+      now: this.now(),
       fridges: this.configured.map((f) => ({
         id: f.id,
         name: f.name,
@@ -173,6 +220,8 @@ export class KitShopLive {
         inKitShop: this.ds.shops.has(f.externalId),
         stockItems: [...(this.ds.stock.get(f.externalId)?.values() ?? [])].reduce((a, b) => a + b, 0),
         stockAt: this.ds.stockAt.get(f.externalId) ?? null,
+        receiptsToday: today.get(f.externalId)?.receipts ?? 0,
+        unitsToday: Math.round(today.get(f.externalId)?.units ?? 0),
         lastSaleAt: lastSale.get(f.externalId) ?? null,
       })),
     };

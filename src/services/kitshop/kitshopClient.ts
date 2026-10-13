@@ -5,6 +5,8 @@ import { KitShopTransport, kitshopDate, type KitShopEnvelope } from "./transport
 import {
   KitShopFillUpSchema,
   KitShopProductSchema,
+  KitShopProductGroupSchema,
+  type KitShopProductGroup,
   KitShopSaleSchema,
   KitShopSalesByProductSchema,
   KitShopSaleDetailSchema,
@@ -43,6 +45,7 @@ export const READ_ENDPOINTS = {
   checkAuth: { path: "CheckAuth", confirmed: true, note: "§3.1 проверка логина/подписи" },
   shops: { path: "GetShops", confirmed: true, note: "§3.2 справочник торговых точек" },
   products: { path: "GetProducts", confirmed: true, note: "§3.3 справочник товаров (Barcode, VendorCode)" },
+  productGroups: { path: "GetProductGroups", confirmed: true, note: "§3.5 справочник товарных групп (категории товаров)" },
   stocks: { path: "GetShopStocks", confirmed: true, note: "§3.20 остатки одной торговой точки" },
   sales: { path: "GetSales", confirmed: true, note: "§3.22 продажи без позиций (позиции — GetSaleById), период ≤ 60 дней" },
   fillUps: { path: "GetFillUps", confirmed: true, note: "§3.19 операции загрузки и снятия (FillUps), период ≤ 60 дней" },
@@ -90,6 +93,10 @@ export class KitShopReadOnlyClient {
 
   async getProducts(): Promise<KitShopProduct[]> {
     return this.#list("products", {}, "Products", KitShopProductSchema);
+  }
+
+  async getProductGroups(): Promise<KitShopProductGroup[]> {
+    return this.#list("productGroups", {}, "ProductGroups", KitShopProductGroupSchema);
   }
 
   /** Stock of ONE shop. ResultCode 100 = no stock / not tracked → empty list. */

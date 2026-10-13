@@ -16,9 +16,34 @@ export const CATEGORY_RULES: { category: CategoryId; pattern: RegExp }[] = [
   { category: "breakfast", pattern: /завтрак|сырник|(?<![а-яё])каш[аи](?![а-яё])|панкейк|вафл|омлет|кр[эе]мбл|фрит+ат|драник|оладь|гранол[аы]? с йогурт|маффины яичные|^\s*яйцо|творожн[а-яё]* запеканк|творожно-[а-яё]+ запеканк|творожный боул|блин[а-яё]* (со?|из) (творож|сгущ|шоколад|банан|ягод)|шоколадные блинчики/i },
   { category: "dessert", pattern: /десерт|тирамису|трайфл|чизкейк|мильфей|мусс(?![а-яё])|пудинг|кукис|печень|щербет|медовик|(?<![а-яё])торт(?![а-яё])|пп пирог|(?<![а-яё-])сладк|эклер|макарун|чак-чак|парфе|капкейк|баноффи|кекс|панна|бисквит|суфле|творожная масса|сочник|взбитыми сливками|(лимонный|яблочный|морковно-овсяный) пирог|фрукт|активиа|данон|живой йогурт/i },
   { category: "snack", pattern: /сэндвич|панини|панани|(?<![а-яё])ролл(?![а-яё])|круассан|(?<![а-яё])киш(?![а-яё])|кесадиль|самса|лепешк|пирож|курник|пирог|бургер|хот-дог|сосиска|слойк|бейгл|чиабатт|борек|(?<![а-яё])пита(?![а-яё])|буритто|тартиль|боксмастер|наггетс|крылышк|брускет|бутерброд|орама|блинчики/i },
-  { category: "salad", pattern: /салат|оливье|под шубой|винегрет|мимоза|нисуаз|боул|ачучук|нарезк|по-корейски|карпаччо|ассорти|спаржа/i },
+  { category: "salad", pattern: /салат|цезар|оливье|под шубой|винегрет|мимоза|нисуаз|боул|ачучук|нарезк|по-корейски|карпаччо|ассорти|спаржа/i },
   { category: "hot", pattern: /(?<![а-яё])рис(?![а-яё])|рисом|гречк|гречнев|пюре|картоф|картошк|макарон|паст[аойу]|спагетти|тальятелле|фузилли|лапш|плов|лагман|цомян|манты|гуляш|жаркое|котлет|шницель|стейк|филе|медальон|фрикасе|бефстро|(?<![а-яё])вок(?![а-яё])|лазань|фунчоза|ганфан|чахохбили|тефтел|фрикадел|митбол|бифштекс|окрошк|(?<![а-яё])суп|борщ|булгур|птитим|кус-?кус|форел|лосос|судак|(?<![а-яё])кет[аы](?![а-яё])|рыбн|конин|телятин|говядин|голубц|гриль|гриле|цыпл|утин|шашлык|фарширован|запеканк|крокет|кебаб|мясо по/i },
 ];
+
+/**
+ * Category from the KiT Shop product GROUP name (GetProductGroups). Preferred over the dish name;
+ * null when the group says nothing about the category (e.g. "Основная", "Green City") → the name classifier decides.
+ */
+const GROUP_RULES: { category: CategoryId; pattern: RegExp }[] = [
+  { category: "breakfast", pattern: /завтрак|каш[аи]|сырник/i },
+  { category: "salad", pattern: /салат|боул|закуск[аи] холодн/i },
+  { category: "dessert", pattern: /десерт|сладк|выпечка сладк|кондитер|торт/i },
+  { category: "drink", pattern: /напит|морс|компот|сок|вода|чай|кофе/i },
+  { category: "snack", pattern: /снек|выпечк|сэндвич|бутерброд|панини|перекус|закуск/i },
+  { category: "hot", pattern: /горяч|втор|обед|гарнир|основн[а-яё]* блюд|суп/i },
+];
+
+export function categoryFromGroup(groupName: string | null | undefined): CategoryId | null {
+  if (!groupName) return null;
+  for (const rule of GROUP_RULES) if (rule.pattern.test(groupName)) return rule.category;
+  return null;
+}
+
+/** KiT Shop group first, the dish name only as a fallback. */
+export function categorizeProduct(name: string, groupName?: string | null): { category: CategoryId; by: "group" | "name" } {
+  const g = categoryFromGroup(groupName);
+  return g ? { category: g, by: "group" } : { category: categorize(name), by: "name" };
+}
 
 export function categorize(name: string, group?: string | null): CategoryId {
   const text = `${group ?? ""} ${name}`;
@@ -31,7 +56,7 @@ export function toProduct(p: KitShopProduct, groupName?: string | null): Product
     id: `K${p.ProductId}`,
     externalId: p.ProductId,
     name: p.ProductName,
-    categoryId: categorize(p.ProductName, groupName),
+    categoryId: categorizeProduct(p.ProductName, groupName).category,
     price: p.Price ?? 0,
     sku: p.VendorCode || p.ShortCodes || p.ProductId.slice(-5),
     imageUrl: null,

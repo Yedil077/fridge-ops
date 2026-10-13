@@ -223,3 +223,22 @@ test("read-only production path: even with every write flag on, no live adapter 
     Object.assign(process.env, saved);
   }
 });
+
+test("categories: the KiT Shop product group wins, the dish name is only a fallback", async () => {
+  const { categorizeProduct, categoryFromGroup } = await import("../src/services/kitshop/adapter");
+  assert.deepEqual(categorizeProduct("Микс здоровья", "Салаты"), { category: "salad", by: "group" });
+  assert.deepEqual(categorizeProduct("Праздничный плов", "Green City"), { category: "hot", by: "name" });
+  assert.deepEqual(categorizeProduct("Цезарь с курицей", null), { category: "salad", by: "name" });
+  assert.equal(categoryFromGroup("Горячие блюда"), "hot");
+  assert.equal(categoryFromGroup("Напитки"), "drink");
+  assert.equal(categoryFromGroup("Основная"), null);
+});
+
+test("shadow mode: real sync runs, users keep the simulator, nothing switches by itself", () => {
+  const rt = code("src/lib/server/runtime.ts");
+  assert.match(rt, /this\.mode = process\.env\.DATA_SOURCE === "kitshop" \? "kitshop" : "mock";/, "only DATA_SOURCE=kitshop shows real data");
+  assert.match(rt, /this\.shadow = process\.env\.DATA_SOURCE === "kitshop_shadow";/);
+  assert.match(rt, /if \(rt\.mode === "kitshop" \|\| rt\.shadow\) kitshopLive\(\);/, "shadow starts the read-only sync");
+  assert.match(rt, /if \(this\.mode === "mock"\) return \{ label: "SIMULATOR"/, "users see SIMULATOR in shadow mode");
+  assert.match(rt, /if \(this\.mode === "mock" && this\.sim\) return this\.withSettings\(this\.sim\.snapshot\(\)\);/, "screens read the simulator");
+});

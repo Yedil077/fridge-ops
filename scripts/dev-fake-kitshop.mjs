@@ -9,8 +9,12 @@ import { FAKE, startFakeKitShop } from "./fake-kitshop.mjs";
 startFakeKitShop();
 const env = {
   ...process.env,
-  DATA_SOURCE: process.env.DATA_SOURCE || "kitshop",
+  // --shadow: real (fake) data is synced in the background, screens show the simulator
+  DATA_SOURCE: process.argv.includes("--shadow") ? "kitshop_shadow" : process.env.DATA_SOURCE || "kitshop",
   STORE_DRIVER: "file",
+  // the fake has 10 days of receipts: a short history keeps the rehearsal fast (production default: 180 days, 300 ms)
+  KITSHOP_BACKFILL_DAYS: process.env.KITSHOP_BACKFILL_DAYS || "14",
+  KITSHOP_BACKFILL_DELAY_MS: process.env.KITSHOP_BACKFILL_DELAY_MS || "50",
   KITSHOP_ENABLED: "true",
   KITSHOP_API_URL: `http://localhost:${FAKE.port}/APIService.svc`,
   KITSHOP_COMPANY_ID: FAKE.companyId,

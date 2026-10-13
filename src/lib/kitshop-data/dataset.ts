@@ -18,6 +18,11 @@ export interface KsProduct {
   groupId: number | null;
 }
 
+export interface KsGroup {
+  groupId: number;
+  name: string;
+}
+
 export interface KsSale {
   saleId: string;
   shopId: string;
@@ -25,6 +30,10 @@ export interface KsSale {
   total: number | null;
   /** positions loaded through GetSaleById */
   detailed: boolean;
+  /** failed GetSaleById attempts (the receipt is retried later, the sync goes on) */
+  detailFailures?: number;
+  /** wall-clock ms before which the receipt is not retried */
+  retryAt?: number | null;
 }
 
 export interface KsPosition {
@@ -41,17 +50,25 @@ export interface KsStock {
   qty: number;
 }
 
+export interface KsSyncError {
+  at: number;
+  step: string;
+  error: string;
+}
+
 /** Sync bookkeeping — persisted, so a restart never re-downloads history. */
 export interface KsSyncState {
   lastCatalogSyncAt: number | null;
   lastStockSyncAt: number | null;
   lastSalesSyncAt: number | null;
   lastFillupsSyncAt: number | null;
-  /** oldest wall-clock ms already listed through GetSales (backfill goes back to now − 180 days) */
+  /** oldest wall-clock ms already listed through GetSales (backfill goes back to now − KITSHOP_BACKFILL_DAYS) */
   backfillFrom: number | null;
   lastSuccessAt: number | null;
   lastErrorAt: number | null;
   lastError: string | null;
+  /** last 100 errors (admin: errors in the last 24 h) */
+  errors?: KsSyncError[];
 }
 
 export const emptySyncState = (): KsSyncState => ({
@@ -63,11 +80,13 @@ export const emptySyncState = (): KsSyncState => ({
   lastSuccessAt: null,
   lastErrorAt: null,
   lastError: null,
+  errors: [],
 });
 
 export class KsDataset {
   shops = new Map<string, KsShop>();
   products = new Map<string, KsProduct>();
+  groups = new Map<number, KsGroup>();
   sales = new Map<string, KsSale>();
   /** saleId → positions */
   positions = new Map<string, KsPosition[]>();
@@ -82,28 +101,50 @@ export class KsDataset {
     this.version++;
   }
 
-  undetailed(limit: number): KsSale[] {
+  /** Receipts still without product lines, newest first; ones waiting for a retry are skipped until retryAt. */
+  undetailed(limit: number, now = Infinity): KsSale[] {
     const out: KsSale[] = [];
-    for (const s of this.sales.values()) if (!s.detailed) out.push(s);
+    for (const s of this.sales.values()) if (!s.detailed && (s.retryAt ?? 0) <= now) out.push(s);
     // newest first: recent days become useful before the old backfill finishes
     return out.sort((a, b) => b.soldAt - a.soldAt).slice(0, limit);
   }
 
-  counts() {
+  counts(now?: number) {
     let detailed = 0;
+    let retrying = 0;
     let positions = 0;
     let units = 0;
-    for (const s of this.sales.values()) if (s.detailed) detailed++;
+    let last24h = 0;
+    for (const s of this.sales.values()) {
+      if (s.detailed) detailed++;
+      else if ((s.detailFailures ?? 0) > 0) retrying++;
+      if (now !== undefined && s.soldAt > now - 86_400_000 && s.soldAt <= now) last24h++;
+    }
     for (const list of this.positions.values()) {
       positions += list.length;
       for (const p of list) units += p.qty;
     }
+    let stockRows = 0;
+    for (const m of this.stock.values()) stockRows += m.size;
     let oldest: number | null = null;
     let newest: number | null = null;
     for (const s of this.sales.values()) {
       if (oldest === null || s.soldAt < oldest) oldest = s.soldAt;
       if (newest === null || s.soldAt > newest) newest = s.soldAt;
     }
-    return { shops: this.shops.size, products: this.products.size, sales: this.sales.size, salesDetailed: detailed, positions, units: Math.round(units), oldestSale: oldest, newestSale: newest };
+    return {
+      shops: this.shops.size,
+      products: this.products.size,
+      groups: this.groups.size,
+      sales: this.sales.size,
+      salesDetailed: detailed,
+      salesRetrying: retrying,
+      salesLast24h: last24h,
+      positions,
+      units: Math.round(units),
+      stockRows,
+      oldestSale: oldest,
+      newestSale: newest,
+    };
   }
 }

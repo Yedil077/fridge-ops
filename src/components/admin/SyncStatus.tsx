@@ -5,17 +5,22 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
 import { api } from "@/lib/client/api";
 import type { LiveStatus } from "@/lib/server/kitshopLive";
+import type { Runtime } from "@/lib/server/runtime";
 
 interface Data {
   mode: string;
+  shadow: boolean;
   readOnly: boolean;
   status: LiveStatus | null;
+  compare: Awaited<ReturnType<Runtime["shadowCompare"]>>;
   endpoints: { name: string; method: string }[];
   hint?: string;
 }
 
 /** server wall-clock values already are Almaty time ("UTC fields = local") */
 const fmtWall = (ms: number | null | undefined) => (ms ? new Date(ms).toLocaleString("ru-RU", { timeZone: "UTC" }) : "—");
+const day = (ms: number | null | undefined) => (ms ? new Date(ms).toISOString().slice(0, 10) : "—");
+const n = (v: number) => v.toLocaleString("ru-RU");
 const ago = (now: number, ms: number | null) => {
   if (!ms) return "";
   const m = Math.round((now - ms) / 60_000);
@@ -56,8 +61,28 @@ export function SyncStatus() {
         </p>
       ) : (
         <>
+          {data.shadow && (
+            <p className="mt-2 rounded-lg bg-accent/15 px-3 py-2 text-[13px] text-accent">
+              SHADOW MODE: реальные данные KiT Shop синхронизируются и прогнозируются параллельно, но пользователи пока видят прежние экраны (SIMULATOR).
+              Переключение на реальные данные — только после проверки (DATA_SOURCE=kitshop).
+            </p>
+          )}
+          <div className="mt-3 grid grid-cols-2 gap-2 rounded-lg border border-line p-3 text-[13px] md:grid-cols-5">
+            <Big label="История" value={`${s.progress.daysDone} / ${s.progress.daysTotal} дн.`} />
+            <Big label="Чеки" value={n(s.progress.receipts)} sub={`с позициями ${n(s.progress.receiptsDetailed)} · в очереди ${n(s.progress.receiptsPending)}${s.progress.receiptsRetrying ? ` · повтор ${n(s.progress.receiptsRetrying)}` : ""}`} />
+            <Big label="Позиции (товары в чеках)" value={n(s.progress.items)} />
+            <Big label="Последняя успешная синхронизация" value={fmtWall(s.lastSuccessAt)} sub={ago(s.now, s.lastSuccessAt).replace(" · ", "")} />
+            <Big label="Текущая дата догрузки" value={day(s.progress.currentBackfillDate)} sub={`нагрузка: ${s.progress.limits.concurrency} запрос(а), пауза ${s.progress.limits.delayMs} мс`} />
+          </div>
           <div className="mt-3 grid grid-cols-2 gap-2 text-[13px] md:grid-cols-4">
-            <Tile label="Источник на экранах" value={s.label} tone={s.label === "KITSHOP REAL" ? "good" : "warn"} />
+            <Tile label="Источник на экранах" value={data.shadow ? "SIMULATOR (shadow)" : s.label} tone={s.label === "KITSHOP REAL" && !data.shadow ? "good" : "warn"} />
+            <Tile label="Строк остатков (точка × товар)" value={n(s.counts.stockRows)} />
+            <Tile label="Продажи за 24 ч (чеков)" value={n(s.counts.salesLast24h)} />
+            <Tile label="Ошибки за 24 ч" value={String(s.errors24h.count)} tone={s.errors24h.count ? "warn" : "good"} />
+            <Tile
+              label="Категории"
+              value={s.categorizedBy ? `по группе KiT Shop ${s.categorizedBy.group} · по названию ${s.categorizedBy.name}` : `групп в KiT Shop: ${s.counts.groups}`}
+            />
             <Tile label="Последняя успешная синхронизация" value={`${fmtWall(s.lastSuccessAt)}${ago(s.now, s.lastSuccessAt)}`} />
             <Tile label="Остатки (GetShopStocks)" value={`${fmtWall(s.lastStockSyncAt)}${ago(s.now, s.lastStockSyncAt)}`} />
             <Tile label="Продажи (GetSales)" value={`${fmtWall(s.lastSalesSyncAt)}${ago(s.now, s.lastSalesSyncAt)}`} />
@@ -67,7 +92,7 @@ export function SyncStatus() {
             <Tile label="Продано единиц (в копии)" value={String(s.counts.units)} />
             <Tile label="Самая старая / новая продажа" value={`${fmtWall(s.counts.oldestSale)} — ${fmtWall(s.counts.newestSale)}`} />
             <Tile
-              label="Догрузка истории 180 дней"
+              label={`Догрузка истории ${s.progress.daysTotal} дней`}
               value={s.backlog.backfillDaysLeft > 0 || s.backlog.undetailed > 0 ? `осталось ${s.backlog.backfillDaysLeft} дн. · ${s.backlog.undetailed} чеков без позиций` : "готово"}
               tone={s.backlog.backfillDaysLeft > 0 || s.backlog.undetailed > 0 ? "warn" : "good"}
             />
@@ -84,12 +109,23 @@ export function SyncStatus() {
             <span className="text-[12px] text-ink-3">Автоматически каждые 5 минут; каталог — раз в 6 часов. Только методы чтения: {data.endpoints.map((e) => e.method).join(", ")}.</span>
           </div>
           {err && <p className="mt-2 text-[13px] text-crit-ink">{err}</p>}
+          {s.errors24h.last.length > 0 && (
+            <ul className="mt-2 space-y-0.5 text-[12px] text-warn">
+              {s.errors24h.last.map((e, i) => (
+                <li key={i}>
+                  {fmtWall(e.at)} · {e.step}: {e.error}
+                </li>
+              ))}
+            </ul>
+          )}
+          {data.compare && <Compare c={data.compare} />}
           {s.lastTick && (
             <p className="mt-2 text-[12px] text-ink-3">
               Последний проход ({s.lastTick.ms} мс): {s.lastTick.steps.filter((x) => !x.step.startsWith("GetShopStocks ")).map((x) => `${x.step} ${x.ok ? x.count : "ОШИБКА"}`).join(" · ")}
             </p>
           )}
-          <table className="mt-3 w-full text-[12px]">
+          <div className="mt-3 overflow-x-auto">
+          <table className="w-full min-w-[760px] text-[12px] [&_td]:px-2 [&_td]:whitespace-nowrap [&_th]:px-2 [&_th]:whitespace-nowrap">
             <thead className="text-left text-ink-3">
               <tr>
                 <th className="py-1">Точка</th>
@@ -97,6 +133,7 @@ export function SyncStatus() {
                 <th>В KiT Shop</th>
                 <th className="text-right">Остаток, шт</th>
                 <th>Остатки на</th>
+                <th className="text-right">Сегодня: чеков / шт</th>
                 <th>Последняя продажа</th>
               </tr>
             </thead>
@@ -108,14 +145,66 @@ export function SyncStatus() {
                   <td className={f.inKitShop ? "text-good-ink" : "text-crit-ink"}>{f.inKitShop ? "да" : s.counts.shops ? "НЕТ" : "—"}</td>
                   <td className="num text-right">{f.stockItems}</td>
                   <td>{fmtWall(f.stockAt)}</td>
+                  <td className="num text-right">{f.receiptsToday} / {f.unitsToday}</td>
                   <td>{fmtWall(f.lastSaleAt)}</td>
                 </tr>
               ))}
             </tbody>
           </table>
+          </div>
         </>
       )}
     </section>
+  );
+}
+
+function Compare({ c }: { c: NonNullable<Data["compare"]> }) {
+  if (!c.ready) return <p className="mt-3 text-[13px] text-warn">Сравнение real vs mock: {c.message}</p>;
+  return (
+    <div className="mt-4">
+      <h3 className="text-[14px] font-bold">Сравнение: реальные данные (прогноз параллельно) vs SIMULATOR</h3>
+      <p className="text-[12px] text-ink-3">
+        Товаров в реальном прогнозе: {c.products}
+        {c.categorizedBy ? ` (категория по группе KiT Shop: ${c.categorizedBy.group}, по названию: ${c.categorizedBy.name})` : ""} · рекомендаций: real {c.realRecommendations} / mock{" "}
+        {c.mockRecommendations}
+      </p>
+      <div className="overflow-x-auto">
+        <table className="mt-2 w-full min-w-[720px] text-[12px] [&_td]:px-2 [&_td]:whitespace-nowrap [&_th]:px-2 [&_th]:whitespace-nowrap">
+          <thead className="text-left text-ink-3">
+            <tr>
+              <th className="py-1">Точка</th>
+              <th className="text-right">Остаток real / mock</th>
+              <th className="text-right">Продано сегодня real / mock</th>
+              <th className="text-right">Посл. час real</th>
+              <th className="text-right">Прогноз 2 ч real / mock</th>
+              <th>Статус real / mock</th>
+            </tr>
+          </thead>
+          <tbody>
+            {c.rows.map((r) => (
+              <tr key={r.shopId} className="border-t border-line">
+                <td className="py-1.5">{r.name}</td>
+                <td className="num text-right">{r.real.stock} / {r.mock?.stock ?? "—"}</td>
+                <td className="num text-right">{r.real.salesToday} / {r.mock?.salesToday ?? "—"}</td>
+                <td className="num text-right">{r.real.lastHour}</td>
+                <td className="num text-right">{r.real.expected2h} / {r.mock?.expected2h ?? "—"}</td>
+                <td>{r.real.status} / {r.mock?.status ?? "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function Big({ label, value, sub }: { label: string; value: string; sub?: string }) {
+  return (
+    <div>
+      <div className="text-[11px] text-ink-3">{label}</div>
+      <div className="num mt-0.5 text-[18px] font-bold">{value}</div>
+      {sub && <div className="text-[11px] text-ink-3">{sub}</div>}
+    </div>
   );
 }
 

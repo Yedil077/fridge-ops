@@ -64,6 +64,11 @@ class Runtime {
   state: AppState;
   sim: Simulator | null = null;
   readonly mode: "mock" | "kitshop";
+  /**
+   * DATA_SOURCE=kitshop_shadow: the real KiT Shop sync and a parallel forecast run in the background,
+   * screens still show the simulator; admins compare real vs mock. Safe first step before DATA_SOURCE=kitshop.
+   */
+  readonly shadow: boolean;
   readonly store: StateStore;
   private cache = new Map<ForecastMode, { key: string; result: AnalysisResult }>();
   /** KiT Shop is READ ONLY (default). Loads / unloads / write-offs / transfer legs / product creation are refused. */
@@ -76,6 +81,7 @@ class Runtime {
 
   private constructor(state: AppState, store: StateStore) {
     this.mode = process.env.DATA_SOURCE === "kitshop" ? "kitshop" : "mock";
+    this.shadow = process.env.DATA_SOURCE === "kitshop_shadow";
     this.state = state;
     this.store = store;
     // getters, not values: `reseed` replaces this.state
@@ -112,7 +118,7 @@ class Runtime {
       console.error("[apps-holodosov] could not create the first administrator:", e instanceof Error ? e.message : e, "— check ADMIN_LOGIN (2–32 chars) and ADMIN_PIN (4–8 digits)");
     }
     if (rt.mode === "mock") rt.ensureSim();
-    else kitshopLive(); // starts the 5-minute read-only sync
+    if (rt.mode === "kitshop" || rt.shadow) kitshopLive(); // starts the 5-minute read-only sync
     rt.save();
     await rt.saving;
     // background pass for KiT Shop write operations — never in read-only mode (nothing may be sent to KiT Shop)
@@ -120,6 +126,7 @@ class Runtime {
       setInterval(() => {
         rt.ops.tick().catch((e) => console.error("[kitshop-ops] tick failed", e));
       }, 60_000).unref?.();
+    if (rt.shadow) console.info("[apps-holodosov] SHADOW MODE: real KiT Shop data is synced in the background, screens show the simulator");
     console.info(`[apps-holodosov] KiT Shop ${rt.readOnly ? "READ ONLY" : "writes allowed (KITSHOP_READ_ONLY=false)"}`);
     return rt;
   }
@@ -236,6 +243,41 @@ class Runtime {
     if (this.mode === "mock") return { label: "SIMULATOR", lastSuccessAt: null };
     const live = kitshopLive();
     return { label: live.label(), lastSuccessAt: live.ds.state.lastSuccessAt };
+  }
+
+  /**
+   * Admin comparison (shadow mode): the real KiT Shop snapshot + a forecast built on it in parallel vs the simulator
+   * the users see. Nothing of it is shown to users or stored in missions.
+   */
+  async shadowCompare() {
+    if (this.mode !== "mock" || !this.shadow) return null;
+    const real = await kitshopLive()
+      .snapshot()
+      .then((s) => this.withSettings(s))
+      .catch((e: unknown) => (e instanceof Error ? e.message : String(e)));
+    const mock = await this.analysis("realtime");
+    if (typeof real === "string") return { ready: false as const, message: real };
+    const realResult = analyze(real, emptyState().learning, [], "realtime", this.untilMinute());
+    const sum = (r: AnalysisResult, f: number, k: "expected2h" | "salesLastHour") => Math.round(r.forecasts[f].categories.reduce((a, c) => a + c[k], 0) * 10) / 10;
+    const mockIdx = new Map(mock.snap.fridges.map((f, i) => [f.externalId, i]));
+    const rows = real.fridges.map((f, i) => {
+      const m = mockIdx.get(f.externalId);
+      return {
+        shopId: f.externalId,
+        name: f.name,
+        real: { stock: realResult.forecasts[i].totalStock, salesToday: realResult.forecasts[i].salesToday, lastHour: sum(realResult, i, "salesLastHour"), expected2h: sum(realResult, i, "expected2h"), status: realResult.forecasts[i].status },
+        mock: m === undefined ? null : { stock: mock.result.forecasts[m].totalStock, salesToday: mock.result.forecasts[m].salesToday, expected2h: sum(mock.result, m, "expected2h"), status: mock.result.forecasts[m].status },
+      };
+    });
+    return {
+      ready: true as const,
+      at: real.now,
+      products: real.products.length,
+      categorizedBy: real.categorizedBy ?? null,
+      realRecommendations: realResult.drafts.length,
+      mockRecommendations: mock.result.drafts.length,
+      rows,
+    };
   }
 
   private assertWritable(what: string) {
