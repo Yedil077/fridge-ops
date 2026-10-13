@@ -36,6 +36,9 @@ export const POST = handle(async (req: Request, ctx: { params: Promise<{ id: str
     return { operation: opView(await rt.ops.verify(id, user.name)) };
   }
   if (!manager) throw new HttpError(403, "Повтор и ручное решение — только менеджер");
-  if (body.action === "retry") return { operation: opView(await rt.ops.retry(id, user.name)) };
+  if (body.action === "retry") {
+    if (rt.readOnly) throw new HttpError(403, "KiT Shop подключён только для чтения — повторная отправка отключена");
+    return { operation: opView(await rt.ops.retry(id, user.name)) };
+  }
   return { operation: opView(rt.ops.resolve(id, body.decision, user.name, body.note)) };
 });

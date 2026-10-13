@@ -6,7 +6,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import { MobileShell } from "@/components/mobile/MobileShell";
 import { SkeletonList } from "@/components/mobile/ui";
 import { OpRow } from "@/components/mobile/ops";
-import { api, atLeast, useMe } from "@/lib/client/api";
+import { api, atLeast, useFlags, useMe } from "@/lib/client/api";
+import { ReadOnlyNotice } from "@/components/mobile/ReadOnlyNotice";
 import { MODE_NOTE, opAction, useOps, type OpView, type OpsList } from "@/lib/client/ops";
 
 /**
@@ -15,6 +16,12 @@ import { MODE_NOTE, opAction, useOps, type OpView, type OpsList } from "@/lib/cl
  * Employees: their own operations.
  */
 export default function SyncPage() {
+  const { readOnly } = useFlags();
+  if (readOnly) return <ReadOnlyNotice title="Операции KiT Shop" />;
+  return <SyncJournal />;
+}
+
+function SyncJournal() {
   const { data: me } = useMe();
   const manager = atLeast(me, "MANAGER");
   const [tab, setTab] = useState<"open" | "all">("open");

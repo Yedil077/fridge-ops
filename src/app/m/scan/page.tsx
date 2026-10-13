@@ -8,7 +8,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import { MobileShell } from "@/components/mobile/MobileShell";
 import { SkeletonList } from "@/components/mobile/ui";
 import { ScannerSheet, SendStatusPanel, fmtTime, type SendState } from "@/components/mobile/ops";
-import { atLeast, useMe } from "@/lib/client/api";
+import { atLeast, useFlags, useMe } from "@/lib/client/api";
+import { ReadOnlyNotice } from "@/components/mobile/ReadOnlyNotice";
 import { useMobileFridges } from "@/lib/client/mobileApi";
 import { MODE_NOTE, newOperationId, submitOperation, useOpsCatalog, type OpType, type OpView, type OpsCatalog } from "@/lib/client/ops";
 
@@ -39,6 +40,8 @@ function writeLS(key: string, v: unknown) {
 }
 
 export default function ScanPage() {
+  const { readOnly } = useFlags();
+  if (readOnly) return <ReadOnlyNotice title="Сканирование" />;
   return (
     <Suspense fallback={<MobileShell title="Сканирование"><SkeletonList /></MobileShell>}>
       <Scan />

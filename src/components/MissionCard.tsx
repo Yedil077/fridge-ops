@@ -4,7 +4,7 @@ import { useState } from "react";
 import clsx from "clsx";
 import type { Mission } from "@/lib/domain/types";
 import { categoryById } from "@/lib/domain/categories";
-import { useMissionAction, type XpGain } from "@/lib/client/api";
+import { useFlags, useMissionAction, type XpGain } from "@/lib/client/api";
 import { fmtClock } from "@/lib/client/format";
 
 const TYPE_STYLE: Record<Mission["type"], string> = {
@@ -34,6 +34,7 @@ const nameOf = (m: Mission, id: string) => (id === m.sourceFridgeId ? m.sourceNa
 export function MissionCard({ mission: m, onXp, compact }: { mission: Mission; onXp?: (xp: XpGain[]) => void; compact?: boolean }) {
   const [open, setOpen] = useState(false);
   const action = useMissionAction(onXp);
+  const { rewards } = useFlags();
   const busy = action.isPending;
   const active = m.status === "NEW" || m.status === "ACCEPTED" || m.status === "IN_PROGRESS";
 
@@ -153,7 +154,7 @@ export function MissionCard({ mission: m, onXp, compact }: { mission: Mission; o
           <p className="mt-2 text-[11px] text-ink-3">
             {m.acceptedBy} · принято {m.acceptedAt ? fmtClock(m.acceptedAt) : ""}
             {m.completedAt ? ` · выполнено ${fmtClock(m.completedAt)}` : ""}
-            {m.xpAwarded ? ` · +${m.xpAwarded} XP` : ""}
+            {m.xpAwarded && rewards ? ` · +${m.xpAwarded} XP` : ""}
           </p>
         )}
       </div>

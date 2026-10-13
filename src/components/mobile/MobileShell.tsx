@@ -14,7 +14,7 @@ const TABS = [
   { href: "/m", label: "Сегодня", icon: "🏠" },
   { href: "/m/tasks", label: "Задачи", icon: "✅" },
   { href: "/m/fridges", label: "Холодильники", icon: "🧊" },
-  { href: "/m/rating", label: "Награды", icon: "🏆" },
+  { href: "/m/analytics", label: "Аналитика", icon: "📊" },
 ];
 
 /** Staff (phone) layout: slim top bar, content, bottom tab bar. Safe-area aware for iPhone. */
@@ -90,10 +90,15 @@ export function MobileShell({ children, now, title, back }: { children: ReactNod
                 {me.name} · {me.role === "ADMIN" ? "администратор" : me.role === "MANAGER" ? "менеджер" : "сотрудник"}
               </div>
             )}
-            <Link href="/m/scan" className="block min-h-12 px-4 py-3.5 text-[15px] active:bg-surface-3">📷 Сканировать</Link>
-            <Link href="/m/sync" className="block min-h-12 px-4 py-3.5 text-[15px] active:bg-surface-3">
-              🔄 {atLeast(me, "MANAGER") ? "Синхронизация KiT Shop" : "Мои операции"}
-            </Link>
+            {me && me.readOnly === false && (
+              <>
+                <Link href="/m/scan" className="block min-h-12 px-4 py-3.5 text-[15px] active:bg-surface-3">📷 Сканировать</Link>
+                <Link href="/m/sync" className="block min-h-12 px-4 py-3.5 text-[15px] active:bg-surface-3">
+                  🔄 {atLeast(me, "MANAGER") ? "Синхронизация KiT Shop" : "Мои операции"}
+                </Link>
+              </>
+            )}
+            {me?.rewards && <Link href="/m/rating" className="block min-h-12 px-4 py-3.5 text-[15px] active:bg-surface-3">🏆 Награды</Link>}
             {atLeast(me, "MANAGER") && (
               <button
                 onClick={() => {
@@ -108,7 +113,7 @@ export function MobileShell({ children, now, title, back }: { children: ReactNod
             {atLeast(me, "ADMIN") && (
               <>
                 <Link href="/analytics" className="block min-h-12 px-4 py-3.5 text-[15px] active:bg-surface-3">📊 Analytics</Link>
-                <Link href="/admin/products" className="block min-h-12 px-4 py-3.5 text-[15px] active:bg-surface-3">🏷 Товары и KiT Shop</Link>
+                <Link href="/admin/products" className="block min-h-12 px-4 py-3.5 text-[15px] active:bg-surface-3">🏷 Товары</Link>
                 <Link href="/admin" className="block min-h-12 px-4 py-3.5 text-[15px] active:bg-surface-3">⚙️ Настройки</Link>
               </>
             )}

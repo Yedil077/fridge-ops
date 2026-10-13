@@ -6,10 +6,12 @@ import { MobileShell } from "@/components/mobile/MobileShell";
 import { RouteRow, SkeletonList, UrgencyPill, URGENCY, plural, routeTargets } from "@/components/mobile/ui";
 import { useAlerts, useMobileHome } from "@/lib/client/mobileApi";
 import { ModeToggle } from "@/lib/client/forecastMode";
+import { useFlags } from "@/lib/client/api";
 
 export default function MobileHomePage() {
   const { data, error } = useMobileHome();
   const alerts = useAlerts();
+  const flags = useFlags();
   const alert = alerts.data?.notifications.find((n) => (alerts.data?.now ?? 0) - n.at < 60 * 60_000);
 
   if (error) return <MobileShell><p className="mt-10 text-center text-[15px] text-ink-2">{(error as Error).message}</p></MobileShell>;
@@ -33,9 +35,11 @@ export default function MobileHomePage() {
         <Count dot="🔴" n={data.counts.critical} label="срочно" tone={data.counts.critical > 0} />
       </section>
 
-      <Link href="/m/scan" className="mt-3 flex h-14 items-center justify-center gap-2 rounded-2xl border border-line-strong bg-surface-2 text-[16px] font-bold active:bg-surface-3">
-        📷 СКАНИРОВАТЬ · загрузка / снятие / списание
-      </Link>
+      {!flags.readOnly && (
+        <Link href="/m/scan" className="mt-3 flex h-14 items-center justify-center gap-2 rounded-2xl border border-line-strong bg-surface-2 text-[16px] font-bold active:bg-surface-3">
+          📷 СКАНИРОВАТЬ · загрузка / снятие / списание
+        </Link>
+      )}
 
       {alert && (
         <Link
@@ -89,13 +93,15 @@ export default function MobileHomePage() {
         </section>
       )}
 
-      <Link href="/m/rating" className="card mt-6 block p-4 active:bg-surface-2">
-        <div className="label">🏆 Сегодня</div>
-        <div className="mt-2 grid grid-cols-3 gap-2">
-          <div>
-            <div className="num text-[24px] font-bold text-xp">{data.today.xpToday}</div>
-            <div className="text-[12px] text-ink-3">XP</div>
-          </div>
+      <Link href={flags.rewards ? "/m/rating" : "/m/tasks"} className="card mt-6 block p-4 active:bg-surface-2">
+        <div className="label">{flags.rewards ? "🏆 Сегодня" : "Сегодня"}</div>
+        <div className={clsx("mt-2 grid gap-2", flags.rewards ? "grid-cols-3" : "grid-cols-2")}>
+          {flags.rewards && (
+            <div>
+              <div className="num text-[24px] font-bold text-xp">{data.today.xpToday}</div>
+              <div className="text-[12px] text-ink-3">XP</div>
+            </div>
+          )}
           <div>
             <div className="num text-[24px] font-bold">
               {data.today.done}
@@ -108,7 +114,7 @@ export default function MobileHomePage() {
             <div className="text-[12px] text-ink-3">точность</div>
           </div>
         </div>
-        {data.player.streak >= 2 && <div className="mt-3 text-[14px] text-serious">🔥 {data.player.streak} задач подряд с хорошим результатом</div>}
+        {flags.rewards && data.player.streak >= 2 && <div className="mt-3 text-[14px] text-serious">🔥 {data.player.streak} задач подряд с хорошим результатом</div>}
       </Link>
     </MobileShell>
   );

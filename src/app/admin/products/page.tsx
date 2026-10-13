@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
 import { Shell } from "@/components/Shell";
-import { api } from "@/lib/client/api";
+import { api, useFlags } from "@/lib/client/api";
 import type { productsAdmin } from "@/lib/server/opsViews";
 
 type Data = Awaited<ReturnType<typeof productsAdmin>>;
@@ -28,6 +28,7 @@ interface Preview {
 export default function ProductsAdminPage() {
   const qc = useQueryClient();
   const { data, error } = useQuery({ queryKey: ["admin", "products"], queryFn: () => api<Data>("/api/admin/products") });
+  const { readOnly } = useFlags();
   const [filter, setFilter] = useState<"problems" | "all">("problems");
   const [q, setQ] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
@@ -145,7 +146,7 @@ export default function ProductsAdminPage() {
                 )}
 
                 <div className="mt-3 flex flex-wrap gap-2">
-                  {r.status !== "MAPPED" && r.reason !== "ambiguous" && (
+                  {!readOnly && r.status !== "MAPPED" && r.reason !== "ambiguous" && (
                     <button
                       disabled={busy === r.id}
                       onClick={async () => {

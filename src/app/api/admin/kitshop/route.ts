@@ -37,6 +37,9 @@ export const POST = handle(async (req: Request) => {
   const body = Body.parse(await req.json());
   const rt = await getRuntime();
   const st = adminState(rt);
+  // KiT Shop is read-only: the REAL WRITE TEST wizard (the only path that could send MakeFillUp) is switched off
+  if (rt.readOnly && ["test-start", "test-prepare", "test-confirm", "set-test-product", "set-test-shop"].includes(body.action))
+    throw new HttpError(403, "KiT Shop подключён только для чтения — тест записи отключён");
   const busy = () => {
     const r = st.writeTest;
     return !!r && !r.finishedAt && [r.load, r.unload].some((l) => l?.sentAt && l.result !== "PASS" && l.result !== "FAIL");

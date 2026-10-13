@@ -1,5 +1,6 @@
-// Rehearsal of PHASE D against a LOCAL FAKE KiT Shop: fake API on :4010 + `next dev` on :3100 with the write gate
-// open for ONE shop (621583). Never points at the real api.kitshop.ru. Uses a separate state file (.data-fake/).
+// Rehearsal against a LOCAL FAKE KiT Shop: fake API on :4010 + `next dev` on :3100 in DATA_SOURCE=kitshop (read-only sync,
+// 15 points, generated receipts). Never points at the real api.kitshop.ru. Uses a separate state dir (.data-fake/).
+// KiT Shop stays read-only unless KITSHOP_READ_ONLY=false is set in your shell (then the old Phase D write rehearsal works).
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +9,8 @@ import { FAKE, startFakeKitShop } from "./fake-kitshop.mjs";
 startFakeKitShop();
 const env = {
   ...process.env,
+  DATA_SOURCE: process.env.DATA_SOURCE || "kitshop",
+  STORE_DRIVER: "file",
   KITSHOP_ENABLED: "true",
   KITSHOP_API_URL: `http://localhost:${FAKE.port}/APIService.svc`,
   KITSHOP_COMPANY_ID: FAKE.companyId,

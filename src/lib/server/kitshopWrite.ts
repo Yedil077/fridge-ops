@@ -35,6 +35,14 @@ interface KitShopServer {
 
 const g = globalThis as unknown as { __kitshopServer?: KitShopServer };
 
+/**
+ * KiT Shop is used ONLY FOR READING unless KITSHOP_READ_ONLY=false is set explicitly.
+ * In read-only mode the live writer is never constructed, so no code path can reach MakeFillUp / AddProduct.
+ */
+export function kitshopReadOnly(): boolean {
+  return process.env.KITSHOP_READ_ONLY !== "false";
+}
+
 function server(): KitShopServer {
   if (!g.__kitshopServer) {
     const config = readKitShopConfig();
@@ -50,7 +58,7 @@ function server(): KitShopServer {
       },
     });
     const reader = new KitShopReadOnlyClient(config, transport);
-    const open = config.enabled && gate.writeEnabled && !gate.dryRun && gate.shops.length > 0;
+    const open = !kitshopReadOnly() && config.enabled && gate.writeEnabled && !gate.dryRun && gate.shops.length > 0;
     const live = open ? new KitShopLiveWriter(config, gate, transport, reader) : null;
     if (live) console.warn(`[kitshop] LIVE writes enabled for shops: ${gate.shops.join(", ")} (scope ${process.env.KITSHOP_WRITE_SCOPE === "all" ? "all" : "test"})`);
     Object.assign(s, {
@@ -120,7 +128,8 @@ export function trustAbsent(mode: AdapterMode): boolean {
 export function writeModeSummary() {
   const a = server();
   return {
-    writeEnabled: a.gate.writeEnabled,
+    readOnly: kitshopReadOnly(),
+    writeEnabled: a.gate.writeEnabled && !kitshopReadOnly(),
     dryRun: a.gate.dryRun,
     liveShops: a.live ? a.gate.shops : [],
     scope: a.scope,

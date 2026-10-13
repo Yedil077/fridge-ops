@@ -6,7 +6,7 @@ import { MissionCard } from "@/components/MissionCard";
 import { FridgeCard } from "@/components/FridgeCard";
 import { DevPanel } from "@/components/DevPanel";
 import { useXpToasts } from "@/components/XpToast";
-import { atLeast, useDashboard, useMe, type DashboardView } from "@/lib/client/api";
+import { atLeast, useDashboard, useFlags, useMe, type DashboardView } from "@/lib/client/api";
 import { ModeToggle } from "@/lib/client/forecastMode";
 import { fmtClock, fmtMoney, pct, signed } from "@/lib/client/format";
 
@@ -150,6 +150,7 @@ function Kpi({
 }
 
 function ScoreCard({ d }: { d: DashboardView }) {
+  const { rewards } = useFlags();
   const s = d.score;
   const rows = [
     { label: "Availability", value: pct(s.availability), good: s.availability >= 0.9 },
@@ -174,6 +175,7 @@ function ScoreCard({ d }: { d: DashboardView }) {
           </div>
         ))}
       </dl>
+      {rewards && (
       <div className="mt-4 border-t border-line pt-3">
         <div className="flex items-center justify-between text-[12px]">
           <span className="text-ink-2">
@@ -186,6 +188,7 @@ function ScoreCard({ d }: { d: DashboardView }) {
         </div>
         <div className="mt-1 text-right text-[10px] text-ink-3">до Lv {d.player.level + 1}: {d.player.levelTo - d.player.xp} XP</div>
       </div>
+      )}
     </div>
   );
 }

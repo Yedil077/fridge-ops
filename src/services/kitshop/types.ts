@@ -62,7 +62,30 @@ export const KitShopFillUpSchema = z
   })
   .passthrough();
 
-export const KitShopSaleSchema = z.object({ SaleId: Id.optional(), ShopId: Id.optional() }).passthrough();
+/** §3.22 GetSales — receipts without items (SaleDateTime is the time at the fridge). */
+export const KitShopSaleSchema = z
+  .object({
+    SaleId: Id,
+    ShopId: Id,
+    DeviceId: Id.nullish(),
+    SaleDateTime: z.string(),
+    Sum: z.number().nullish(),
+  })
+  .passthrough();
+
+/** §3.10 GetSaleById — one receipt with its Positions (product-level sales). */
+export const KitShopSaleDetailSchema = z
+  .object({
+    SaleId: Id,
+    ShopId: Id,
+    SaleDateTime: z.string(),
+    Sum: z.number().nullish(),
+    Positions: z
+      .array(z.object({ PositionId: Id, ProductId: Id, Price: z.number().nullish(), Quantity: z.number(), Sum: z.number().nullish() }).passthrough())
+      .nullish(),
+  })
+  .passthrough();
+export type KitShopSaleDetail = z.infer<typeof KitShopSaleDetailSchema>;
 
 /** §3.26 GetSalesByProducts — company-wide sales per product for a period (≤ 60 days). */
 export const KitShopSalesByProductSchema = z

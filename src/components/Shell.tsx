@@ -65,7 +65,7 @@ export function Shell({
                 <LiveClock serverNow={now} className="num font-mono text-ink" />
               </div>
             )}
-            {player && (
+            {player && me?.rewards && (
               <div className="hidden items-center gap-2 md:flex" title={`${player.xp} XP`}>
                 <div className="text-right leading-tight">
                   <div className="text-[12px] text-ink">{player.name}</div>

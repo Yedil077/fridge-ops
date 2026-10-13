@@ -7,6 +7,8 @@ import {
   KitShopProductSchema,
   KitShopSaleSchema,
   KitShopSalesByProductSchema,
+  KitShopSaleDetailSchema,
+  type KitShopSaleDetail,
   type KitShopSalesByProduct,
   KitShopShopSchema,
   KitShopStockSchema,
@@ -45,6 +47,7 @@ export const READ_ENDPOINTS = {
   sales: { path: "GetSales", confirmed: true, note: "§3.22 продажи без позиций (позиции — GetSaleById), период ≤ 60 дней" },
   fillUps: { path: "GetFillUps", confirmed: true, note: "§3.19 операции загрузки и снятия (FillUps), период ≤ 60 дней" },
   fillUpById: { path: "GetFillUpById", confirmed: true, note: "§3.12 детали операции загрузки/снятия" },
+  saleById: { path: "GetSaleById", confirmed: true, note: "§3.10 один чек с позициями (товар, количество, цена)" },
   salesByProducts: { path: "GetSalesByProducts", confirmed: true, note: "§3.26 продажи в разрезе товаров по всей компании, период ≤ 60 дней" },
 } as const satisfies Record<string, ReadEndpoint>;
 
@@ -100,6 +103,11 @@ export class KitShopReadOnlyClient {
 
   async getFillUps(q: SalesQuery): Promise<KitShopFillUp[]> {
     return this.#list("fillUps", { Filter: this.#filter(q) }, "FillUps", KitShopFillUpSchema);
+  }
+
+  /** One receipt with its positions — the only documented source of product-level sales per fridge and time. */
+  async getSaleById(id: string): Promise<KitShopSaleDetail | null> {
+    return (await this.#list("saleById", { Id: Number(id) }, "Sales", KitShopSaleDetailSchema))[0] ?? null;
   }
 
   /** Company-wide quantity sold per product in [from, to] (≤ 60 days). The filter has no ShopId in the docs. */

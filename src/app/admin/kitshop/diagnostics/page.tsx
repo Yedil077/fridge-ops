@@ -5,6 +5,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
 import { Shell } from "@/components/Shell";
 import { UnusedProductsReport } from "@/components/admin/UnusedProductsReport";
+import { SyncStatus } from "@/components/admin/SyncStatus";
 import { api } from "@/lib/client/api";
 import type { diagnostics } from "@/lib/server/kitshopAdmin";
 import type { StepResult, TestLeg } from "@/lib/kitshop-ops/writeTest";
@@ -82,8 +83,10 @@ export default function KitShopDiagnosticsPage() {
           <span className="ml-2 text-[11px] font-semibold tracking-normal opacity-80">· host {d.target.host}</span>
         </div>
         <div>
-          <h1 className="text-[22px] font-bold">KiT Shop · диагностика и Phase D</h1>
-          <p className="mt-1 text-[13px] text-ink-3">Пароли и подписи не показываются. Право на запись задаётся только настройками сервера.</p>
+          <h1 className="text-[22px] font-bold">KiT Shop · диагностика и синхронизация</h1>
+          <p className="mt-1 text-[13px] text-ink-3">
+            {d.readOnly ? "KiT Shop подключён ТОЛЬКО ДЛЯ ЧТЕНИЯ: Apps Холодосов ничего в нём не меняет. " : ""}Пароли и подписи не показываются.
+          </p>
         </div>
         {msg && <p className="rounded-lg bg-crit/15 px-3 py-2 text-[13px] text-crit-ink">{msg}</p>}
 
@@ -92,22 +95,30 @@ export default function KitShopDiagnosticsPage() {
           <Tile label="Последний REAL API TEST" value={d.connection} tone={d.realTest ? (d.realTest.failingStep ? "bad" : "good") : undefined} small />
           <Tile label="Company ID" value={d.companyId ?? "missing"} tone={d.companyId ? undefined : "bad"} />
           <Tile label="API user" value={d.apiUser} tone={d.apiUser === "configured" ? undefined : "bad"} />
-          <Tile label="Write mode" value={d.paused.on ? `${d.writeMode} · PAUSED` : d.writeMode} tone={d.paused.on ? "bad" : d.writeMode === "LIMITED PRODUCTION" ? "warn" : undefined} />
+          <Tile label="Write mode" value={d.paused.on && !d.readOnly ? `${d.writeMode} · PAUSED` : d.writeMode} tone={d.paused.on && !d.readOnly ? "bad" : d.writeMode === "LIMITED PRODUCTION" ? "warn" : undefined} />
           <Tile label="Last successful request" value={d.lastSuccess ? `${fmt(d.lastSuccess.at)} · ${d.lastSuccess.method} · ${d.lastSuccess.ms} ms` : "—"} small />
           <Tile label="Last stock sync" value={d.lastStockSync ? `${fmt(d.lastStockSync.at)}${d.lastStockSync.ok ? "" : " (ошибка)"}` : "—"} small />
-          <Tile label="Allowed write shops" value={d.allowedShops.length ? d.allowedShops.map((s) => `${s.shopId}${s.name ? ` ${s.name}` : ""}`).join(", ") : "нет"} small />
-          <Tile label="Sign / scope / timeout" value={`${d.signCase} · ${d.scope} · ${d.timeoutMs / 1000}s`} small />
-          <Tile label="Pending operations" value={String(d.counts.pending)} />
-          <Tile label="Unknown operations" value={String(d.counts.unknown)} tone={d.counts.unknown ? "warn" : undefined} />
-          <Tile label="Failed operations" value={String(d.counts.failed)} tone={d.counts.failed ? "warn" : undefined} />
+          {!d.readOnly && (
+            <>
+              <Tile label="Allowed write shops" value={d.allowedShops.length ? d.allowedShops.map((s) => `${s.shopId}${s.name ? ` ${s.name}` : ""}`).join(", ") : "нет"} small />
+              <Tile label="Sign / scope / timeout" value={`${d.signCase} · ${d.scope} · ${d.timeoutMs / 1000}s`} small />
+              <Tile label="Pending operations" value={String(d.counts.pending)} />
+              <Tile label="Unknown operations" value={String(d.counts.unknown)} tone={d.counts.unknown ? "warn" : undefined} />
+              <Tile label="Failed operations" value={String(d.counts.failed)} tone={d.counts.failed ? "warn" : undefined} />
+            </>
+          )}
           <Tile label="Last error" value={d.lastError ? `${fmt(d.lastError.at)} · ${d.lastError.method}: ${d.lastError.error ?? d.lastError.resultCode}` : "—"} small />
         </section>
+
+        <SyncStatus />
 
         <RealApiTest d={d} busy={busy} run={() => post("real", { action: "real-test" })} runAuth={() => post("real-auth", { action: "real-test-auth" })} />
 
         <UnusedProductsReport enabled={d.target.realDiagnostics || d.target.readEnabled} />
 
-        {/* ── switches ── */}
+        {/* ── write tooling: hidden while KiT Shop is read-only (server default) ── */}
+        {!d.readOnly && (
+        <>
         <Card title="KITSHOP WRITE">
           <div className="flex flex-wrap items-center gap-3">
             <span className={clsx("rounded-lg px-3 py-2 text-[14px] font-bold", d.writeEnabledEnv && !d.dryRunEnv ? "bg-warn/20 text-warn" : "bg-surface-3 text-ink-2")}>
@@ -126,6 +137,8 @@ export default function KitShopDiagnosticsPage() {
             </span>
           </div>
         </Card>
+        </>
+        )}
 
         {/* ── connection ── */}
         <Card title="Соединение (только чтение)">
@@ -143,6 +156,8 @@ export default function KitShopDiagnosticsPage() {
         </Card>
 
         {/* ── test shop / product ── */}
+        {!d.readOnly && (
+        <>
         <Card title="TEST SHOP">
           <p className="text-[13px] text-ink-3">Одна точка для первого теста. Хранится стабильный KiT Shop ShopId. Для реальной записи она же должна быть единственной в списке WRITE_SHOPS на сервере.</p>
           <select
@@ -243,6 +258,8 @@ export default function KitShopDiagnosticsPage() {
             </div>
           )}
         </Card>
+        </>
+        )}
 
         <Card title="Последние запросы к KiT Shop">
           {d.calls.length === 0 ? (

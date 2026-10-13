@@ -65,6 +65,32 @@ function holidayDays(fromDay: number, toDay: number): Set<number> {
   return set;
 }
 
+/** Our 15 points as configured (names, KiT Shop ShopId, groups, schedule hint). Static config, not sales. */
+export function configuredFridges(anchorDay: number): Fridge[] {
+  const cosLat = Math.cos((NETWORK_CENTER.lat * Math.PI) / 180);
+  return ARCHETYPES.map((a) => ({
+    id: `F${a.code}`,
+    externalId: a.kitshopId ?? `mock-shop-${a.code}`,
+    code: a.code,
+    name: a.name ?? `Fridge ${a.code}`,
+    shortName: a.shortName ?? a.name ?? `Fridge ${a.code}`,
+    priority: 2,
+    proximityGroup: a.zone,
+    transferGroup: a.transferGroup ?? a.zone,
+    location: a.location,
+    locationType: a.locationType,
+    workingDays: a.workingDays,
+    openingMinute: a.open,
+    closingMinute: a.close,
+    latitude: NETWORK_CENTER.lat + a.pos[1] / 111,
+    longitude: NETWORK_CENTER.lng + a.pos[0] / (111 * cosLat),
+    capacity: a.capacity,
+    isActive: true,
+    closedOnHolidays: ["office", "coworking", "university"].includes(a.locationType),
+    activeSinceDay: a.ageDays ? anchorDay - a.ageDays : anchorDay - 400,
+  }));
+}
+
 export function buildModel(seed: number, anchorDay: number): SimModel {
   const rng = mulberry32(hashSeed(seed, 7));
   const catIds = CATEGORIES.map((c) => c.id);
@@ -86,28 +112,7 @@ export function buildModel(seed: number, anchorDay: number): SimModel {
   });
   const catProducts = catIds.map((cid) => products.map((p, i) => (p.categoryId === cid ? i : -1)).filter((i) => i >= 0));
 
-  const cosLat = Math.cos((NETWORK_CENTER.lat * Math.PI) / 180);
-  const fridges: Fridge[] = ARCHETYPES.map((a) => ({
-    id: `F${a.code}`,
-    externalId: a.kitshopId ?? `mock-shop-${a.code}`,
-    code: a.code,
-    name: a.name ?? `Fridge ${a.code}`,
-    shortName: a.shortName ?? a.name ?? `Fridge ${a.code}`,
-    priority: 2,
-    proximityGroup: a.zone,
-    transferGroup: a.transferGroup ?? a.zone,
-    location: a.location,
-    locationType: a.locationType,
-    workingDays: a.workingDays,
-    openingMinute: a.open,
-    closingMinute: a.close,
-    latitude: NETWORK_CENTER.lat + a.pos[1] / 111,
-    longitude: NETWORK_CENTER.lng + a.pos[0] / (111 * cosLat),
-    capacity: a.capacity,
-    isActive: true,
-    closedOnHolidays: ["office", "coworking", "university"].includes(a.locationType),
-    activeSinceDay: a.ageDays ? anchorDay - a.ageDays : anchorDay - 400,
-  }));
+  const fridges = configuredFridges(anchorDay);
 
   // weekly intensity: own hours of each weekday + the after-midnight tail of the previous weekday
   const quarterShare = ARCHETYPES.map((a) => {

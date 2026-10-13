@@ -6,19 +6,23 @@ import type { KitShopProduct } from "./types";
  * Maps KitShop DTOs to our domain. Pure functions — no network, no writes.
  */
 
-/** Keyword rules to map a KitShop product group/name to our category. Editable once real groups are known. */
-export const CATEGORY_RULES: { category: CategoryId; keywords: string[] }[] = [
-  { category: "breakfast", keywords: ["завтрак", "сырник", "омлет", "каша", "блин", "круассан"] },
-  { category: "hot", keywords: ["горяч", "паста", "плов", "гречк", "лазань", "курица", "котлет", "суп"] },
-  { category: "salad", keywords: ["салат", "боул", "винегрет", "цезарь"] },
-  { category: "dessert", keywords: ["десерт", "торт", "чизкейк", "тирамису", "медовик", "панна"] },
-  { category: "drink", keywords: ["напит", "вода", "сок", "морс", "чай", "кофе", "смузи", "кефир"] },
-  { category: "snack", keywords: ["перекус", "сэндвич", "ролл", "пирож", "хумус", "снек"] },
+/**
+ * Category of a real KiT Shop dish by its name (Green City menu). Order matters: the first matching rule wins,
+ * so "Сэндвич с курицей" is a snack and "Гуляш с отварным рисом" is hot (not a drink because of "отвар"). Editable; unknown names fall back to "snack".
+ * (?<![а-яё]) / (?![а-яё]) are word start / end for Cyrillic (JS \b only knows Latin letters): "сок" is not "кусок".
+ */
+export const CATEGORY_RULES: { category: CategoryId; pattern: RegExp }[] = [
+  { category: "drink", pattern: /\d+\s*мл(?![а-яё])|морс(?![а-яё])|компот|лимонад|(?<![а-яё])чай(?![а-яё])|каркаде|(?<![а-яё])отвар(?![а-яё])|напиток|(?<![а-яё])сок(?![а-яё])|(?<![а-яё])вода(?![а-яё])|смузи|кефир|айран|кофе|кисель|узвар|exponenta/i },
+  { category: "breakfast", pattern: /завтрак|сырник|(?<![а-яё])каш[аи](?![а-яё])|панкейк|вафл|омлет|кр[эе]мбл|фрит+ат|драник|оладь|гранол[аы]? с йогурт|маффины яичные|^\s*яйцо|творожн[а-яё]* запеканк|творожно-[а-яё]+ запеканк|творожный боул|блин[а-яё]* (со?|из) (творож|сгущ|шоколад|банан|ягод)|шоколадные блинчики/i },
+  { category: "dessert", pattern: /десерт|тирамису|трайфл|чизкейк|мильфей|мусс(?![а-яё])|пудинг|кукис|печень|щербет|медовик|(?<![а-яё])торт(?![а-яё])|пп пирог|(?<![а-яё-])сладк|эклер|макарун|чак-чак|парфе|капкейк|баноффи|кекс|панна|бисквит|суфле|творожная масса|сочник|взбитыми сливками|(лимонный|яблочный|морковно-овсяный) пирог|фрукт|активиа|данон|живой йогурт/i },
+  { category: "snack", pattern: /сэндвич|панини|панани|(?<![а-яё])ролл(?![а-яё])|круассан|(?<![а-яё])киш(?![а-яё])|кесадиль|самса|лепешк|пирож|курник|пирог|бургер|хот-дог|сосиска|слойк|бейгл|чиабатт|борек|(?<![а-яё])пита(?![а-яё])|буритто|тартиль|боксмастер|наггетс|крылышк|брускет|бутерброд|орама|блинчики/i },
+  { category: "salad", pattern: /салат|оливье|под шубой|винегрет|мимоза|нисуаз|боул|ачучук|нарезк|по-корейски|карпаччо|ассорти|спаржа/i },
+  { category: "hot", pattern: /(?<![а-яё])рис(?![а-яё])|рисом|гречк|гречнев|пюре|картоф|картошк|макарон|паст[аойу]|спагетти|тальятелле|фузилли|лапш|плов|лагман|цомян|манты|гуляш|жаркое|котлет|шницель|стейк|филе|медальон|фрикасе|бефстро|(?<![а-яё])вок(?![а-яё])|лазань|фунчоза|ганфан|чахохбили|тефтел|фрикадел|митбол|бифштекс|окрошк|(?<![а-яё])суп|борщ|булгур|птитим|кус-?кус|форел|лосос|судак|(?<![а-яё])кет[аы](?![а-яё])|рыбн|конин|телятин|говядин|голубц|гриль|гриле|цыпл|утин|шашлык|фарширован|запеканк|крокет|кебаб|мясо по/i },
 ];
 
 export function categorize(name: string, group?: string | null): CategoryId {
-  const text = `${group ?? ""} ${name}`.toLowerCase();
-  for (const rule of CATEGORY_RULES) if (rule.keywords.some((k) => text.includes(k))) return rule.category;
+  const text = `${group ?? ""} ${name}`;
+  for (const rule of CATEGORY_RULES) if (rule.pattern.test(text)) return rule.category;
   return "snack";
 }
 

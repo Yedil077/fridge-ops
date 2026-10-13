@@ -2,7 +2,7 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import { summarize, WriteTest, type KitShopAdminState } from "../kitshop-ops/writeTest";
 import { OPEN_STATUSES } from "../kitshop-ops/types";
-import { adapterFor, kitshopReader, kitshopServerInfo, kitshopTransport } from "./kitshopWrite";
+import { adapterFor, kitshopReader, kitshopReadOnly, kitshopServerInfo, kitshopTransport } from "./kitshopWrite";
 import { HttpError, type Runtime } from "./runtime";
 import { REAL_API_HOST, runRealDiagnostic } from "@/services/kitshop/realDiagnostic";
 export type { RealDiagnosticReport, StepResult as RealStep, StepStatus } from "@/services/kitshop/realDiagnostic";
@@ -115,7 +115,7 @@ export async function diagnostics(rt: Runtime) {
   const s = kitshopServerInfo();
   const st = adminState(rt);
   const ops = rt.state.operations;
-  const writeMode = !s.gate.writeEnabled ? "DISABLED" : s.liveOpen ? "LIMITED PRODUCTION" : "DRY RUN";
+  const writeMode = kitshopReadOnly() ? "READ ONLY" : !s.gate.writeEnabled ? "DISABLED" : s.liveOpen ? "LIMITED PRODUCTION" : "DRY RUN";
   const fridges = await ourFridges(rt);
   const call = (m: string) => s.calls.get(m) ?? null;
   const real = st.realDiagnostic ?? null;
@@ -134,6 +134,7 @@ export async function diagnostics(rt: Runtime) {
     lastStockSync: call("GetShopStocks") ? { at: call("GetShopStocks")!.at, ok: call("GetShopStocks")!.ok } : null,
     calls: [...s.calls.values()].sort((a, b) => b.at - a.at),
     writeMode,
+    readOnly: kitshopReadOnly(),
     writeEnabledEnv: s.gate.writeEnabled,
     dryRunEnv: s.gate.dryRun,
     scope: s.scope,

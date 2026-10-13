@@ -10,17 +10,17 @@ import { deliver, detectAlerts } from "./notifications";
 import { bootstrapUsers } from "./users";
 import { Simulator } from "../simulator/simulator";
 import { dayNumber, fmtHM, minuteOfDay, MINUTE_MS, wallClockNow, weekdayOf } from "../time";
-import { KitShopDataSource } from "@/services/kitshop";
+import { kitshopLive, type DataLabel } from "./kitshopLive";
 import { OpsService } from "../kitshop-ops/service";
 import { resolveMapping, type CatalogItem, type MappingResult } from "../kitshop-ops/mapping";
 import type { KsOperation, OpLine, OpType } from "../kitshop-ops/types";
-import { adapterFor, catalogAdapter, mockAdapter, trustAbsent, writeGate } from "./kitshopWrite";
+import { adapterFor, catalogAdapter, kitshopReadOnly, mockAdapter, trustAbsent, writeGate } from "./kitshopWrite";
 import { addProductBody } from "../kitshop-ops/adapters";
 import type { CatalogProductInput } from "../kitshop-ops/types";
 import { newId } from "./pin";
 
 /**
- * Server runtime: owns the data source (simulator in MOCK mode), our app state,
+ * Server runtime: owns the data source (real KiT Shop copy in KITSHOP mode, simulator only in MOCK/dev mode), our app state,
  * the analysis cache, the mission/route workflow and gamification. One instance per server process.
  */
 
@@ -66,7 +66,8 @@ class Runtime {
   readonly mode: "mock" | "kitshop";
   readonly store: StateStore;
   private cache = new Map<ForecastMode, { key: string; result: AnalysisResult }>();
-  private kitshop = new KitShopDataSource();
+  /** KiT Shop is READ ONLY (default). Loads / unloads / write-offs / transfer legs / product creation are refused. */
+  readonly readOnly = kitshopReadOnly();
   private saving: Promise<void> | null = null;
   private dirty = false;
   private catchingUp = false;
@@ -111,12 +112,15 @@ class Runtime {
       console.error("[apps-holodosov] could not create the first administrator:", e instanceof Error ? e.message : e, "— check ADMIN_LOGIN (2–32 chars) and ADMIN_PIN (4–8 digits)");
     }
     if (rt.mode === "mock") rt.ensureSim();
+    else kitshopLive(); // starts the 5-minute read-only sync
     rt.save();
     await rt.saving;
-    // background pass for KiT Shop operations: send provably-unsent ones once, verify UNKNOWN ones
-    setInterval(() => {
-      rt.ops.tick().catch((e) => console.error("[kitshop-ops] tick failed", e));
-    }, 60_000).unref?.();
+    // background pass for KiT Shop write operations — never in read-only mode (nothing may be sent to KiT Shop)
+    if (!rt.readOnly)
+      setInterval(() => {
+        rt.ops.tick().catch((e) => console.error("[kitshop-ops] tick failed", e));
+      }, 60_000).unref?.();
+    console.info(`[apps-holodosov] KiT Shop ${rt.readOnly ? "READ ONLY" : "writes allowed (KITSHOP_READ_ONLY=false)"}`);
     return rt;
   }
 
@@ -223,7 +227,19 @@ class Runtime {
   async snapshot(): Promise<NetworkSnapshot> {
     this.catchUpRealtime();
     if (this.mode === "mock" && this.sim) return this.withSettings(this.sim.snapshot());
-    return this.withSettings(await this.kitshop.snapshot());
+    // real KiT Shop copy from our database; never the simulator
+    return this.withSettings(await kitshopLive().snapshot());
+  }
+
+  /** Label for every screen: KITSHOP REAL, CACHE (KiT Shop stale/unreachable — our database), SIMULATOR (dev only). */
+  dataStatus(): { label: DataLabel; lastSuccessAt: number | null } {
+    if (this.mode === "mock") return { label: "SIMULATOR", lastSuccessAt: null };
+    const live = kitshopLive();
+    return { label: live.label(), lastSuccessAt: live.ds.state.lastSuccessAt };
+  }
+
+  private assertWritable(what: string) {
+    if (this.readOnly) throw new HttpError(403, `${what}: KiT Shop подключён только для чтения. Изменения в KiT Shop через Apps Холодосов отключены.`);
   }
 
   private simSnapshot(): NetworkSnapshot {
@@ -639,6 +655,7 @@ class Runtime {
     input: { id: string; type: OpType; fridgeId: string; items: { productId: string; qty: number }[]; reason?: string },
     user: string,
   ): Promise<{ op: KsOperation; duplicate: boolean }> {
+    this.assertWritable("Загрузка / снятие / списание");
     const existing = this.ops.get(input.id);
     if (existing) {
       // idempotent replay (double tap, offline re-send): nothing is sent again
@@ -665,6 +682,8 @@ class Runtime {
 
   /** Mission completed → TRANSFER = source UNLOAD + target LOAD(s) with the ACTUAL quantities. Runs in background. */
   private startTransfer(snap: NetworkSnapshot, m: Mission, user: string) {
+    // read-only: the recommendation is recorded only in our system, nothing goes to KiT Shop
+    if (this.readOnly) return;
     const fr = new Map(snap.fridges.map((f) => [f.id, f]));
     const src = fr.get(m.sourceFridgeId);
     if (!src) return;
@@ -721,6 +740,7 @@ class Runtime {
 
   /** ADMIN only. preview → exactly what AddProduct would receive. Create → only through the gated adapter. */
   async createInKitShop(productId: string, preview: boolean, admin: string) {
+    this.assertWritable("Создание товара");
     const snap = await this.snapshot();
     const p = snap.products.find((x) => x.id === productId);
     if (!p) throw new HttpError(404, "Товар не найден");
