@@ -21,6 +21,7 @@ interface Status {
     dataReadAt: number;
     endpoints: { endpoint: string; ok: number; failed: number; note: string }[];
     complete: { products: boolean; sales: boolean; stocks: boolean; fillUps: boolean };
+    shops?: { removeTotal: number; checkTotal: number; shops: number; basesRead: number; salesComplete: boolean; salesFrom: number | null };
   } | null;
   ready: boolean;
   last: { name: string; finishedAt: number; startedBy: string | null } | null;
@@ -103,12 +104,24 @@ export function UnusedProductsReport({ enabled }: { enabled: boolean }) {
       {s?.summary && (
         <>
           <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-5">
-            <Cell label="ТОЧНО УДАЛИТЬ" v={s.summary.delete} tone="text-crit-ink" />
+            <Cell label="СЕТЬ: ТОЧНО УДАЛИТЬ" v={s.summary.delete} tone="text-crit-ink" />
             <Cell label="ПРОВЕРИТЬ" v={s.summary.check} tone="text-warn" />
             <Cell label="НОВЫЕ" v={s.summary.fresh} tone="text-accent" />
             <Cell label="ОСТАВИТЬ" v={s.summary.keep} tone="text-good-ink" />
             <Cell label="всего названий" v={s.summary.total} tone="text-ink" />
           </div>
+          {s.summary.shops && (
+            <p className="mt-3 text-[13px]">
+              <b>По каждой точке</b> (листы «УБРАТЬ ПО ТОЧКАМ» и отдельный лист на каждый холодильник): убрать из баз точек —{" "}
+              <b className="text-crit-ink">{s.summary.shops.removeTotal}</b>, проверить — <b className="text-warn">{s.summary.shops.checkTotal}</b>. Базы точек прочитаны:{" "}
+              {s.summary.shops.basesRead} из {s.summary.shops.shops}.{" "}
+              {s.summary.shops.salesComplete ? (
+                <>Продажи по точкам: полные (с {fmtWall(s.summary.shops.salesFrom)}).</>
+              ) : (
+                <span className="text-warn">Продажи по точкам ещё не полные за 60 дней — «убрать» по точкам пока не выдаётся, только «проверить».</span>
+              )}
+            </p>
+          )}
           <div className="mt-2 text-[12px] text-ink-3">
             Данные KiT Shop на {fmtWall(s.summary.dataReadAt)} ·{" "}
             {s.summary.endpoints.map((e) => `${e.endpoint}: ${e.failed ? `ошибок ${e.failed} из ${e.ok + e.failed}` : `OK (${e.ok})`}`).join(" · ")}

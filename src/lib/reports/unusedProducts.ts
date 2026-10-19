@@ -1,4 +1,4 @@
-import { buildXlsx, type CellValue } from "./xlsx";
+import { buildXlsx, type CellValue, type Sheet } from "./xlsx";
 
 /**
  * "Что можно удалить из KiT Shop" — CONSERVATIVE report for managers, built only from a FRESH read of the real KiT Shop.
@@ -322,7 +322,7 @@ const cells = (r: NameRow): CellValue[] => [
   r.cards.map((c) => c.product.productId).join(", "),
 ];
 
-export function buildUnusedProductsXlsx(input: ReportInput, rows = analyzeNames(input)): Uint8Array {
+export function buildUnusedProductsXlsx(input: ReportInput, rows = analyzeNames(input), extra: { before?: Sheet[]; howExtra?: CellValue[][] } = {}): Uint8Array {
   const errors = sanityCheck(rows);
   if (errors.length) throw new Error(`Проверка перед выдачей не пройдена, файл не создан: ${errors.slice(0, 5).join("; ")}`);
   const by = (s: Status[]) => rows.filter((r) => s.includes(r.status));
@@ -351,13 +351,15 @@ export function buildUnusedProductsXlsx(input: ReportInput, rows = analyzeNames(
     [""],
     ["Как сравниваются названия", "Только полное название: регистр и пробелы не важны, но объём, гарнир, мясо, вкус и размер различаются («Каркаде 330 мл» и «Каркаде 500 мл» — разные блюда). Если хоть одна карточка названия активна или новая — всё название остаётся."],
     ["Важно", "Дата создания карточки в API KiT Shop отсутствует: «первое появление» — самая ранняя наблюдаемая активность. Продажи известны с точностью до 14 дней, поэтому «60 дней без продаж» проверяется по 70 дням — строже. Ничего не удаляется автоматически."],
+    ...(extra.howExtra ?? []),
   ];
   return buildXlsx([
-    { name: "ТОЧНО УДАЛИТЬ", rows: [HEADER, ...by(["УДАЛИТЬ"]).map(cells)], widths: WIDTHS },
-    { name: "ПРОВЕРИТЬ", rows: [HEADER, ...by(["МОЖНО ПРОВЕРИТЬ", "НЕ ХВАТАЕТ ДАННЫХ"]).map(cells)], widths: WIDTHS },
-    { name: "ОСТАВИТЬ", rows: [HEADER, ...by(["ОСТАВИТЬ"]).map(cells)], widths: WIDTHS },
-    { name: "НОВЫЕ", rows: [HEADER, ...by(["НОВЫЙ"]).map(cells)], widths: WIDTHS },
-    { name: "ВСЕ ТОВАРЫ", rows: [HEADER, ...rows.map(cells)], widths: WIDTHS },
+    ...(extra.before ?? []),
+    { name: extra.before?.length ? "СЕТЬ ТОЧНО УДАЛИТЬ" : "ТОЧНО УДАЛИТЬ", rows: [HEADER, ...by(["УДАЛИТЬ"]).map(cells)], widths: WIDTHS },
+    { name: extra.before?.length ? "СЕТЬ ПРОВЕРИТЬ" : "ПРОВЕРИТЬ", rows: [HEADER, ...by(["МОЖНО ПРОВЕРИТЬ", "НЕ ХВАТАЕТ ДАННЫХ"]).map(cells)], widths: WIDTHS },
+    { name: extra.before?.length ? "СЕТЬ ОСТАВИТЬ" : "ОСТАВИТЬ", rows: [HEADER, ...by(["ОСТАВИТЬ"]).map(cells)], widths: WIDTHS },
+    { name: extra.before?.length ? "СЕТЬ НОВЫЕ" : "НОВЫЕ", rows: [HEADER, ...by(["НОВЫЙ"]).map(cells)], widths: WIDTHS },
+    { name: extra.before?.length ? "СЕТЬ ВСЕ ТОВАРЫ" : "ВСЕ ТОВАРЫ", rows: [HEADER, ...rows.map(cells)], widths: WIDTHS },
     { name: "КАК СЧИТАЛИ", rows: how, widths: [26, 130], header: false },
   ]);
 }

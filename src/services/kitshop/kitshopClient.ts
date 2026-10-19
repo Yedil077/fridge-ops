@@ -2,6 +2,7 @@ import "server-only";
 import { z } from "zod";
 import { readKitShopConfig, type KitShopConfig } from "./config";
 import { KitShopTransport, kitshopDate, type KitShopEnvelope } from "./transport";
+import { findProductList } from "./productBase";
 import {
   KitShopFillUpSchema,
   KitShopProductSchema,
@@ -46,6 +47,11 @@ export const READ_ENDPOINTS = {
   shops: { path: "GetShops", confirmed: true, note: "§3.2 справочник торговых точек" },
   products: { path: "GetProducts", confirmed: true, note: "§3.3 справочник товаров (Barcode, VendorCode)" },
   productGroups: { path: "GetProductGroups", confirmed: true, note: "§3.5 справочник товарных групп (категории товаров)" },
+  productBaseTemplate: {
+    path: "GetProductBaseTemplate",
+    confirmed: true,
+    note: "§3.32 база товаров торговой точки (Id = ProductBaseTemplateId точки); формат ответа в документации не описан — разбирается осторожно",
+  },
   stocks: { path: "GetShopStocks", confirmed: true, note: "§3.20 остатки одной торговой точки" },
   sales: { path: "GetSales", confirmed: true, note: "§3.22 продажи без позиций (позиции — GetSaleById), период ≤ 60 дней" },
   fillUps: { path: "GetFillUps", confirmed: true, note: "§3.19 операции загрузки и снятия (FillUps), период ≤ 60 дней" },
@@ -97,6 +103,18 @@ export class KitShopReadOnlyClient {
 
   async getProductGroups(): Promise<KitShopProductGroup[]> {
     return this.#list("productGroups", {}, "ProductGroups", KitShopProductGroupSchema);
+  }
+
+  /**
+   * Product base of a shop template (§3.32). The docs describe only the request, not the response, so the reply is searched
+   * for any list of objects with a ProductId. null = the reply had no recognisable product list (the caller must not
+   * treat that as "empty base").
+   */
+  async getProductBaseTemplate(templateId: number): Promise<{ productId: string; disabled: boolean | null }[] | null> {
+    const env = await this.#read("productBaseTemplate", { Id: templateId }, true);
+    if (env.ResultCode === 100) return [];
+    const found = findProductList(env);
+    return found;
   }
 
   /** Stock of ONE shop. ResultCode 100 = no stock / not tracked → empty list. */

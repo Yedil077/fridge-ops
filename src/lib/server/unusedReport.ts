@@ -12,7 +12,9 @@ import {
   type ReportProduct,
   type SalesWindow,
 } from "../reports/unusedProducts";
+import { analyzeByShop, sanityCheckShops, shopHowRows, shopSheets, shopSummaries, type ShopInfo, type ShopReportInput, type ShopSales } from "../reports/unusedByShop";
 import { wallClockNow } from "../time";
+import { kitshopLiveStarted } from "./kitshopLive";
 import { kitshopServerInfo, kitshopTransport } from "./kitshopWrite";
 import { loadReport, saveReport } from "./reportStore";
 import { HttpError } from "./runtime";
@@ -42,6 +44,8 @@ interface Summary {
   dataReadAt: number;
   endpoints: EndpointLog[];
   complete: DataCompleteness;
+  /** per point (each fridge has its own product base) */
+  shops?: { removeTotal: number; checkTotal: number; shops: number; basesRead: number; salesComplete: boolean; salesFrom: number | null };
 }
 
 interface JobState {
@@ -209,15 +213,21 @@ async function run(j: JobState) {
   const shops = (await tryRead("GetShops", () => reader.getShops())) ?? [];
   if (!shops.length) complete.stocks = false;
   const stocks = new Map<string, { qty: number; shops: number }>();
+  const stockByShop = new Map<string, Map<string, number>>();
+  const stockFailedShops = new Set<string>();
   for (const [i, shop] of shops.entries()) {
     set(`остатки: ${shop.ShopName} (${i + 1} из ${shops.length})`, 22 + Math.round((i / Math.max(1, shops.length)) * 8));
     const rows = await tryRead("GetShopStocks", () => reader.getShopStocks(shop.ShopId));
     if (!rows) {
       complete.stocks = false;
+      stockFailedShops.add(shop.ShopId);
       continue;
     }
+    const mine = new Map<string, number>();
+    stockByShop.set(shop.ShopId, mine);
     for (const st of rows) {
       if (st.Quantity <= 0) continue;
+      mine.set(st.ProductId, (mine.get(st.ProductId) ?? 0) + st.Quantity);
       const cur = stocks.get(st.ProductId) ?? { qty: 0, shops: 0 };
       stocks.set(st.ProductId, { qty: cur.qty + st.Quantity, shops: cur.shops + 1 });
     }
@@ -238,6 +248,44 @@ async function run(j: JobState) {
       continue;
     }
     fillUps.push({ at, type: f.FillupType ?? null, notes: d.Notes ?? f.Notes ?? null, shopId: f.ShopId, lines: (d.Details ?? []).map((x) => ({ productId: x.ProductId, qty: x.Quantity })) });
+  }
+  // product base of every point (§3.32) — read only; a template may be shared by several points
+  set("базы товаров точек (GetProductBaseTemplate)", 96);
+  const shopInfos: ShopInfo[] = shops.map((sh) => ({ shopId: sh.ShopId, name: sh.ShopName, templateId: typeof sh.ProductBaseTemplateId === "number" ? sh.ProductBaseTemplateId : null }));
+  const bases: ShopReportInput["bases"] = new Map();
+  for (const t of new Set(shopInfos.map((x) => x.templateId).filter((x): x is number => x !== null))) {
+    const b = await tryRead("GetProductBaseTemplate", () => reader.getProductBaseTemplate(t));
+    bases.set(t, b ?? null);
+    if (b === null) log("GetProductBaseTemplate", false, "ответ без списка товаров (формат не описан в документации)");
+  }
+  if (!shopInfos.some((x) => x.templateId !== null)) log("GetProductBaseTemplate", false, "GetShops не вернул ProductBaseTemplateId — базы точек не прочитаны");
+
+  // sales per point: receipts with product lines kept by the read-only sync (GetSales + GetSaleById)
+  let shopSales: ShopSales | null = null;
+  const live = kitshopLiveStarted();
+  if (live) {
+    await live.ready();
+    const ds = live.ds;
+    const from60 = now - 60 * DAY;
+    let undetailedRecent = false;
+    const byShop: ShopSales["byShop"] = new Map();
+    for (const sale of ds.sales.values()) {
+      if (!sale.detailed) {
+        if (sale.soldAt >= from60) undetailedRecent = true;
+        continue;
+      }
+      const m = byShop.get(sale.shopId) ?? new Map();
+      for (const pos of ds.positions.get(sale.saleId) ?? []) {
+        const cur = m.get(pos.productId) ?? { last: 0, qty60: 0, qtyAll: 0 };
+        cur.last = Math.max(cur.last, sale.soldAt);
+        cur.qtyAll += pos.qty;
+        if (sale.soldAt >= from60) cur.qty60 += pos.qty;
+        m.set(pos.productId, cur);
+      }
+      byShop.set(sale.shopId, m);
+    }
+    const coveredFrom = ds.state.backfillFrom;
+    shopSales = { coveredFrom, complete60: coveredFrom !== null && coveredFrom <= from60 && !undetailedRecent, byShop };
   }
   const dataReadAt = wallClockNow(tz);
 
@@ -260,9 +308,26 @@ async function run(j: JobState) {
   const rows = analyzeNames(input);
   const errors = sanityCheck(rows);
   if (errors.length) throw new Error(`Проверка перед выдачей не пройдена — файл не создан: ${errors.slice(0, 3).join("; ")}`);
+  const shopInput: ShopReportInput = {
+    generatedAt: now,
+    shops: shopInfos,
+    bases,
+    products,
+    shopSales,
+    fillUps,
+    fillUpsComplete: complete.fillUps,
+    fillUpDays: FILLUP_DAYS,
+    stockByShop,
+    stockFailedShops,
+    nameRows: rows,
+  };
+  const shopRows = analyzeByShop(shopInput);
+  const shopErrors = sanityCheckShops(shopRows, shopInput);
+  if (shopErrors.length) throw new Error(`Проверка по точкам не пройдена — файл не создан: ${shopErrors.slice(0, 3).join("; ")}`);
+  const summaries = shopSummaries(shopRows, shopInput);
   const d = new Date(now);
   const p2 = (n: number) => String(n).padStart(2, "0");
-  j.file = buildUnusedProductsXlsx(input, rows);
+  j.file = buildUnusedProductsXlsx(input, rows, { before: shopSheets(shopRows, summaries), howExtra: shopHowRows(shopInput) });
   j.fileName = `chto-udalit-iz-kitshop-${d.getUTCFullYear()}-${p2(d.getUTCMonth() + 1)}-${p2(d.getUTCDate())}.xlsx`;
   const c = (st: string[]) => rows.filter((r) => st.includes(r.status)).length;
   j.summary = {
@@ -274,6 +339,14 @@ async function run(j: JobState) {
     dataReadAt,
     endpoints: input.endpoints,
     complete,
+    shops: {
+      removeTotal: summaries.reduce((a, x) => a + x.remove, 0),
+      checkTotal: summaries.reduce((a, x) => a + x.check, 0),
+      shops: summaries.length,
+      basesRead: summaries.filter((x) => x.baseRead).length,
+      salesComplete: !!shopSales?.complete60,
+      salesFrom: shopSales?.coveredFrom ?? null,
+    },
   };
   j.finishedAt = Date.now();
   j.last = { name: j.fileName, data: j.file, summary: j.summary, finishedAt: j.finishedAt, startedBy: j.startedBy };

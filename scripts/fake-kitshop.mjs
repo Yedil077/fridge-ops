@@ -13,7 +13,8 @@ import path from "node:path";
 export const FAKE = { companyId: "999001", login: "fake-api", password: "fake-password", port: 4010 };
 
 const SHOP_IDS = [621287, 621288, 621136, 622552, 621583, 621826, 621586, 622550, 621137, 622554, 621135, 621286, 622555, 622551, 622553];
-const shops = SHOP_IDS.map((id, i) => ({ ShopId: id, ShopName: `Точка ${i + 1} (fake)`, StocksAccounting: true }));
+// every point has its own product base (template 100 + index); §3.32 response shape is not documented — this is a guess
+const shops = SHOP_IDS.map((id, i) => ({ ShopId: id, ShopName: `Точка ${i + 1} (fake)`, StocksAccounting: true, ProductBaseTemplateId: 100 + i }));
 shops[4].ShopName = "5 БЦ Сатти 1 этаж";
 shops[5].ShopName = "6 БЦ Сатти А2 этаж";
 // groups: "Горячие блюда" / "Напитки" decide the category; "Green City" says nothing → the name classifier is used
@@ -32,7 +33,10 @@ const products = [
   { ProductId: 810015, ProductName: "Творожный чизкейк", Price: 1300 },
   { ProductId: 810016, ProductName: "Гуляш из курицы с отварным рисом", Price: 2100 },
   { ProductId: 810099, ProductName: "Приборы", Price: 0 },
+  // in every base, never sold / loaded anywhere for months → «убрать из точки» once 60 days of history are known
+  { ProductId: 810001, ProductName: "Exponenta натуральный", Price: 900, GroupId: 2 },
 ];
+const baseOf = (templateId) => [...products.slice(0, 8).map((p) => p.ProductId), 810001].map((pid) => ({ ProductId: pid, Price: 1000, Disabled: 0, TemplateId: templateId }));
 const stock = Object.fromEntries(SHOP_IDS.map((id, i) => [id, Object.fromEntries(products.slice(0, 8).map((p, j) => [p.ProductId, (i * 7 + j * 3) % 9]))]));
 
 // deterministic receipts: last 10 days + today, 9:00–19:00, ~30 per point per day
@@ -96,6 +100,10 @@ function handle(method, body) {
       return { ResultCode: 0, Products: products };
     case "GetProductGroups":
       return { ResultCode: 0, ProductGroups: groups };
+    case "GetProductBaseTemplate":
+      return body.Id >= 100 && body.Id < 100 + SHOP_IDS.length
+        ? { ResultCode: 0, ProductBaseTemplate: { Id: body.Id, Products: baseOf(body.Id) } }
+        : { ResultCode: 100, Response: "не найдено" };
     case "GetShopStocks": {
       const s = stock[body.Id];
       if (!s) return { ResultCode: 100, Response: "Торговая точка не найдена" };

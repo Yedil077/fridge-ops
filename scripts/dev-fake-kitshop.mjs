@@ -13,7 +13,8 @@ const env = {
   DATA_SOURCE: process.argv.includes("--shadow") ? "kitshop_shadow" : process.env.DATA_SOURCE || "kitshop",
   STORE_DRIVER: "file",
   // the fake has 10 days of receipts: a short history keeps the rehearsal fast (production default: 180 days, 300 ms)
-  KITSHOP_BACKFILL_DAYS: process.env.KITSHOP_BACKFILL_DAYS || "14",
+  // 61 days: per-point sales then cover the 60-day window of the "что убрать из точки" report
+  KITSHOP_BACKFILL_DAYS: process.env.KITSHOP_BACKFILL_DAYS || "61",
   KITSHOP_BACKFILL_DELAY_MS: process.env.KITSHOP_BACKFILL_DELAY_MS || "50",
   KITSHOP_ENABLED: "true",
   KITSHOP_API_URL: `http://localhost:${FAKE.port}/APIService.svc`,
