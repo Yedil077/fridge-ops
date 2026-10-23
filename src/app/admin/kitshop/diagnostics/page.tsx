@@ -4,7 +4,6 @@ import { useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
 import { Shell } from "@/components/Shell";
-import { UnusedProductsReport } from "@/components/admin/UnusedProductsReport";
 import { SyncStatus } from "@/components/admin/SyncStatus";
 import { api } from "@/lib/client/api";
 import type { diagnostics } from "@/lib/server/kitshopAdmin";
@@ -113,8 +112,6 @@ export default function KitShopDiagnosticsPage() {
         <SyncStatus />
 
         <RealApiTest d={d} busy={busy} run={() => post("real", { action: "real-test" })} runAuth={() => post("real-auth", { action: "real-test-auth" })} />
-
-        <UnusedProductsReport enabled={d.target.realDiagnostics || d.target.readEnabled} />
 
         {/* ── write tooling: hidden while KiT Shop is read-only (server default) ── */}
         {!d.readOnly && (

@@ -106,7 +106,6 @@ const namesOf = (snap: NetworkSnapshot) => Object.fromEntries(snap.fridges.map((
 export function dashboardView(snap: NetworkSnapshot, a: AnalysisResult, state: AppState, user: string, mode: string, forecastMode: ForecastMode = "realtime") {
   const { forecasts } = a;
   const personas = personalities(a.ctx, a.demandIndex);
-  const score = dailyScore(snap, forecasts, state.missions);
   const online = forecasts.filter((f) => f.isOpenNow).length;
   const salesToday = forecasts.reduce((x, f) => x + f.salesToday, 0);
   const revenueToday = forecasts.reduce((x, f) => x + f.revenueToday, 0);
@@ -132,10 +131,12 @@ export function dashboardView(snap: NetworkSnapshot, a: AnalysisResult, state: A
       health,
       critical: forecasts.filter((f) => f.status === "critical").length,
       attention: forecasts.filter((f) => f.status === "attention").length,
+      normal: forecasts.filter((f) => f.status === "normal").length,
+      closed: forecasts.filter((f) => f.status === "closed").length,
+      totalStock: forecasts.reduce((x, f) => x + f.totalStock, 0),
+      salesLastHour: Math.round(forecasts.reduce((x, f) => x + f.categories.reduce((y, c) => y + c.salesLastHour, 0), 0)),
       missionsOpen: missions.open.length,
     },
-    score,
-    player: playerView(state, user),
     missions,
     lastAnalysisAt: state.lastAnalysisAt,
     fridges: forecasts.map((ff) => {
@@ -156,6 +157,7 @@ export function dashboardView(snap: NetworkSnapshot, a: AnalysisResult, state: A
         fillPct: Math.min(100, Math.round((ff.totalStock / fr.capacity) * 100)),
         totalStock: ff.totalStock,
         salesToday: ff.salesToday,
+        salesLastHour: Math.round(ff.categories.reduce((y, c) => y + c.salesLastHour, 0)),
         trendPct: typicalSoFar > 3 ? Math.round((ff.categories.reduce((x, c) => x + c.actualSoFar, 0) / typicalSoFar - 1) * 100) : null,
         forecastNote: forecastNote(ff),
         anomaly: ff.anomaly,

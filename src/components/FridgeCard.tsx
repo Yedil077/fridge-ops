@@ -3,7 +3,7 @@
 import Link from "next/link";
 import clsx from "clsx";
 import type { DashboardView } from "@/lib/client/api";
-import { RISK_META, STATUS_META, signed } from "@/lib/client/format";
+import { RISK_META, STATUS_META } from "@/lib/client/format";
 
 type FridgeCardData = DashboardView["fridges"][number];
 
@@ -42,35 +42,28 @@ export function FridgeCard({ f }: { f: FridgeCardData }) {
         ))}
       </div>
 
-      <div className="mt-3 flex items-end justify-between border-t border-line pt-3">
+      <div className="mt-3 grid grid-cols-3 gap-2 border-t border-line pt-3">
         <div>
-          <div className="text-[10px] uppercase tracking-wider text-ink-3">Продажи</div>
+          <div className="text-[10px] uppercase tracking-wider text-ink-3">Остаток</div>
+          <div className="num text-[18px] font-semibold leading-tight">{f.totalStock}</div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-ink-3">Сегодня</div>
           <div className="num text-[18px] font-semibold leading-tight">{f.salesToday}</div>
         </div>
-        <div className="text-right">
-          <div className="text-[10px] uppercase tracking-wider text-ink-3">К норме</div>
-          <div
-            className={clsx(
-              "num text-[13px] font-medium",
-              f.trendPct === null ? "text-ink-3" : f.trendPct >= 5 ? "text-good-ink" : f.trendPct <= -10 ? "text-serious" : "text-ink-2",
-            )}
-          >
-            {f.trendPct === null ? "—" : `${f.trendPct >= 0 ? "↑" : "↓"} ${signed(f.trendPct)}`}
-          </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-ink-3">За час</div>
+          <div className="num text-[18px] font-semibold leading-tight">{f.salesLastHour}</div>
         </div>
       </div>
 
       <div className="mt-2 min-h-[18px] text-[11px] leading-snug">
         {!f.isOpenNow ? (
           <span className="text-ink-3">{f.opensAt ? `Обычно продажи с ${f.opensAt}` : "Сейчас продаж обычно нет"}</span>
-        ) : f.anomaly ? (
-          <span className="text-warn">⚡ ANOMALY · спрос {signed(f.anomaly.deviationPct)} к норме</span>
         ) : f.forecastNote ? (
           <span className={f.status === "critical" ? "text-crit-ink" : "text-ink-2"}>{f.forecastNote}</span>
         ) : (
-          <span className="text-ink-3">
-            {f.profile.emoji} {f.profile.title}
-          </span>
+          <span className="text-ink-3">всё в порядке</span>
         )}
       </div>
     </Link>

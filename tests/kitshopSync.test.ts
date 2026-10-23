@@ -238,7 +238,7 @@ test("shadow mode: real sync runs, users keep the simulator, nothing switches by
   const rt = code("src/lib/server/runtime.ts");
   assert.match(rt, /this\.mode = process\.env\.DATA_SOURCE === "kitshop" \? "kitshop" : "mock";/, "only DATA_SOURCE=kitshop shows real data");
   assert.match(rt, /this\.shadow = process\.env\.DATA_SOURCE === "kitshop_shadow";/);
-  assert.match(rt, /if \(rt\.mode === "kitshop" \|\| rt\.shadow\) kitshopLive\(\);/, "shadow starts the read-only sync");
+  assert.match(rt, /if \(rt\.mode === "kitshop" \|\| rt\.shadow\) \{\s*kitshopLive\(\);/, "shadow starts the read-only sync");
   assert.match(rt, /if \(this\.mode === "mock"\) return \{ label: "SIMULATOR"/, "users see SIMULATOR in shadow mode");
   assert.match(rt, /if \(this\.mode === "mock" && this\.sim\) return this\.withSettings\(this\.sim\.snapshot\(\)\);/, "screens read the simulator");
 });

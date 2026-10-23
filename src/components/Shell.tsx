@@ -10,10 +10,9 @@ import { LiveClock } from "@/components/LiveClock";
 import { DataSourceBadge } from "@/components/DataSourceBadge";
 
 const NAV = [
-  { href: "/", label: "Command Center", short: "Center", role: "MANAGER" as const },
-  { href: "/analytics", label: "Analytics", short: "Analytics", role: "ADMIN" as const },
-  { href: "/admin/products", label: "Товары", short: "🏷", role: "ADMIN" as const },
-  { href: "/admin/kitshop/diagnostics", label: "KiT Shop", short: "🔌", role: "ADMIN" as const },
+  { href: "/", label: "Главная", short: "🏠", role: "MANAGER" as const },
+  { href: "/analytics", label: "Аналитика", short: "📊", role: "ADMIN" as const },
+  { href: "/reports/unused", label: "Неиспользуемые блюда", short: "📄", role: "MANAGER" as const },
   { href: "/admin", label: "Настройки", short: "⚙️", role: "ADMIN" as const },
 ];
 
@@ -21,12 +20,10 @@ export function Shell({
   children,
   now,
   mode,
-  player,
 }: {
   children: ReactNode;
   now?: number;
   mode?: string;
-  player?: { name: string; level: number; title: string; progress: number; xp: number; levelTo: number };
 }) {
   const path = usePathname();
   const { data: me } = useMe();
@@ -40,7 +37,7 @@ export function Shell({
           </Link>
           <nav className="flex items-center gap-1">
             {NAV.filter((n) => atLeast(me, n.role)).map((n) => {
-              const active = n.href === "/" || n.href === "/admin" ? path === n.href : path.startsWith(n.href);
+              const active = n.href === "/" ? path === n.href : path.startsWith(n.href);
               return (
                 <Link
                   key={n.href}
@@ -57,25 +54,12 @@ export function Shell({
             })}
           </nav>
           <div className="ml-auto flex items-center gap-3">
-            <DataSourceBadge className="hidden md:inline" />
+            <DataSourceBadge />
             {now !== undefined && (
               <div className="flex items-center gap-2 whitespace-nowrap rounded-md border border-line bg-surface px-2.5 py-1 text-[12px]">
                 {mode === "mock" && <span className="rounded bg-accent/15 px-1.5 py-px text-[10px] font-semibold tracking-wider text-accent md:hidden">SIM</span>}
                 <span className="hidden text-ink-3 sm:inline">{fmtDay(now)}</span>
                 <LiveClock serverNow={now} className="num font-mono text-ink" />
-              </div>
-            )}
-            {player && me?.rewards && (
-              <div className="hidden items-center gap-2 md:flex" title={`${player.xp} XP`}>
-                <div className="text-right leading-tight">
-                  <div className="text-[12px] text-ink">{player.name}</div>
-                  <div className="text-[10px] text-ink-3">
-                    Lv {player.level} · {player.title}
-                  </div>
-                </div>
-                <div className="h-1.5 w-16 overflow-hidden rounded-full bg-surface-3">
-                  <div className="h-full rounded-full bg-xp" style={{ width: `${Math.round(player.progress * 100)}%` }} />
-                </div>
               </div>
             )}
             <button

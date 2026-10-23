@@ -28,16 +28,10 @@ interface AdminData {
   travelOverrides: Record<string, number>;
 }
 
-interface RewardsData {
-  claims: { id: string; user: string; title: string; points: number; unlockedAt: number; issuedAt: number | null; issuedBy: string | null }[];
-  players: { name: string; xp: number; points: number }[];
-}
-
 const WD = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
 
 export default function AdminPage() {
   const { data, error } = useQuery({ queryKey: ["admin", "fridges"], queryFn: () => api<AdminData>("/api/admin/fridges") });
-  const rewards = useQuery({ queryKey: ["admin", "rewards"], queryFn: () => api<RewardsData>("/api/admin/rewards") });
 
   return (
     <Shell>
@@ -66,27 +60,11 @@ export default function AdminPage() {
       {data && <TravelForm fridges={data.fridges} overrides={data.travelOverrides} />}
 
       <section className="card mt-8 p-4">
-        <div className="label mb-3">Награды</div>
-        {!rewards.data?.claims.length ? (
-          <p className="text-[13px] text-ink-3">Пока никто не открыл награду. Вехи: 1000 / 3000 / 5000 OPS POINTS.</p>
-        ) : (
-          <table className="w-full text-[13px]">
-            <tbody>
-              {rewards.data.claims.map((c) => (
-                <RewardRow key={c.id} c={c} />
-              ))}
-            </tbody>
-          </table>
-        )}
-        {rewards.data && rewards.data.players.length > 0 && (
-          <div className="mt-4 border-t border-line pt-3 text-[12px] text-ink-3">
-            {rewards.data.players.map((p) => (
-              <span key={p.name} className="mr-4">
-                {p.name}: <span className="text-ink-2">{p.points} pts</span> · {p.xp} XP
-              </span>
-            ))}
-          </div>
-        )}
+        <div className="label mb-2">Developer / Diagnostics</div>
+        <p className="text-[13px] text-ink-3">Статус KiT Shop, синхронизация, ошибки, проверка связи — для администратора.</p>
+        <a href="/admin/kitshop/diagnostics" className="mt-3 inline-flex h-10 items-center rounded-lg bg-surface-3 px-4 text-[13px] font-semibold">
+          Открыть диагностику KiT Shop
+        </a>
       </section>
     </Shell>
   );
@@ -240,30 +218,6 @@ function TravelForm({ fridges, overrides }: { fridges: AdminFridge[]; overrides:
         </ul>
       )}
     </section>
-  );
-}
-
-function RewardRow({ c }: { c: RewardsData["claims"][number] }) {
-  const qc = useQueryClient();
-  const issue = useMutation({
-    mutationFn: () => api("/api/admin/rewards", { method: "POST", body: JSON.stringify({ claimId: c.id }) }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "rewards"] }),
-  });
-  return (
-    <tr className="border-b border-line last:border-0">
-      <td className="py-2">🎁 {c.title}</td>
-      <td className="py-2 text-ink-2">{c.user}</td>
-      <td className="num py-2 text-ink-3">{c.points} pts</td>
-      <td className="py-2 text-right">
-        {c.issuedAt ? (
-          <span className="text-good-ink">выдано{c.issuedBy ? ` (${c.issuedBy})` : ""}</span>
-        ) : (
-          <button onClick={() => issue.mutate()} disabled={issue.isPending} className="h-9 rounded-lg bg-ink px-3 text-[12px] font-semibold text-bg">
-            Отметить выдачу
-          </button>
-        )}
-      </td>
-    </tr>
   );
 }
 

@@ -11,6 +11,7 @@ const DESKTOP_AREAS: { prefix: string; role: "MANAGER" | "ADMIN" }[] = [
   { prefix: "/admin", role: "ADMIN" },
   { prefix: "/analytics", role: "ADMIN" },
   { prefix: "/fridges", role: "MANAGER" },
+  { prefix: "/reports", role: "MANAGER" },
 ];
 const RANK: Record<string, number> = { EMPLOYEE: 1, MANAGER: 2, ADMIN: 3 };
 

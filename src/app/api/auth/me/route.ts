@@ -1,5 +1,6 @@
 import { handle, requireUser } from "@/lib/server/http";
 import { getRuntime } from "@/lib/server/runtime";
+import { wallClockNow } from "@/lib/time";
 
 export const dynamic = "force-dynamic";
 
@@ -16,10 +17,9 @@ export const GET = handle(async () => {
     role: u.role,
     mode: rt.mode,
     readOnly: rt.readOnly,
-    /** XP / OPS POINTS / rewards are hidden unless SHOW_REWARDS=true */
-    rewards: process.env.SHOW_REWARDS === "true",
     dataSource: ds.label,
     lastSyncAt: ds.lastSuccessAt,
+    serverNow: wallClockNow(process.env.APP_TIMEZONE || "Asia/Almaty"),
     closeTime: rt.untilTime(),
     untilTime: rt.untilTime(),
     untilPassed: snap ? rt.untilPassed(snap) : false,

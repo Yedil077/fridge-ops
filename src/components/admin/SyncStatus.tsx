@@ -134,6 +134,7 @@ export function SyncStatus() {
                 <th className="text-right">Остаток, шт</th>
                 <th>Остатки на</th>
                 <th className="text-right">Сегодня: чеков / шт</th>
+                <th className="text-right">За час: чеков / шт</th>
                 <th>Последняя продажа</th>
               </tr>
             </thead>
@@ -146,6 +147,7 @@ export function SyncStatus() {
                   <td className="num text-right">{f.stockItems}</td>
                   <td>{fmtWall(f.stockAt)}</td>
                   <td className="num text-right">{f.receiptsToday} / {f.unitsToday}</td>
+                  <td className="num text-right">{f.receiptsLastHour} / {f.unitsLastHour}</td>
                   <td>{fmtWall(f.lastSaleAt)}</td>
                 </tr>
               ))}

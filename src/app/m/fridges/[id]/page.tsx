@@ -4,9 +4,9 @@ import { use } from "react";
 import clsx from "clsx";
 import Link from "next/link";
 import { MobileShell } from "@/components/mobile/MobileShell";
+import { DataSourceBadge } from "@/components/DataSourceBadge";
 import { SkeletonList } from "@/components/mobile/ui";
 import { useMobileFridge } from "@/lib/client/mobileApi";
-import { useFlags } from "@/lib/client/api";
 
 const STATUS = {
   critical: { label: "🔴 СРОЧНО", cls: "text-crit-ink" },
@@ -25,7 +25,6 @@ const STATE_TAG: Record<string, string> = {
 export default function MobileFridgePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const { data, error, refetch, isFetching } = useMobileFridge(id);
-  const { readOnly } = useFlags();
   if (error) return <MobileShell back="/m/fridges" title="Холодильник"><p className="mt-10 text-center text-ink-2">{(error as Error).message}</p></MobileShell>;
   if (!data) return <MobileShell back="/m/fridges" title="Холодильник"><SkeletonList /></MobileShell>;
   const st = STATUS[data.status];
@@ -39,28 +38,11 @@ export default function MobileFridgePage({ params }: { params: Promise<{ id: str
         <div className={clsx("mt-2 text-[15px] font-bold tracking-wide", st.cls)}>{st.label}</div>
         <div className="mt-1 text-[14px] text-ink-3">Продано сегодня: {data.salesToday}</div>
         <div className="mt-2 flex items-center justify-between text-[13px] text-ink-3">
-          <span>
-            Остатки обновлены в {String(new Date(data.now).getUTCHours()).padStart(2, "0")}:{String(new Date(data.now).getUTCMinutes()).padStart(2, "0")}
-          </span>
+          <DataSourceBadge />
           <button onClick={() => refetch()} className="h-10 rounded-xl bg-surface-3 px-3 font-semibold text-accent">
             {isFetching ? "…" : "ОБНОВИТЬ"}
           </button>
         </div>
-        {!readOnly && (
-        <div className="mt-3 grid grid-cols-3 gap-2">
-          {(
-            [
-              ["LOAD", "Загрузить"],
-              ["UNLOAD", "Снять"],
-              ["WRITE_OFF", "Списать"],
-            ] as const
-          ).map(([t, label]) => (
-            <Link key={t} href={`/m/scan?fridge=${encodeURIComponent(id)}&type=${t}`} className="flex h-12 items-center justify-center rounded-xl bg-surface-2 text-[14px] font-semibold active:bg-surface-3">
-              {label}
-            </Link>
-          ))}
-        </div>
-        )}
       </div>
 
       <div className="mt-4 space-y-3">

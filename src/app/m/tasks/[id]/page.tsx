@@ -6,8 +6,6 @@ import clsx from "clsx";
 import { useQueryClient } from "@tanstack/react-query";
 import { MobileShell } from "@/components/mobile/MobileShell";
 import { DishRow, SkeletonList, UrgencyPill, plural } from "@/components/mobile/ui";
-import { MissionKitShopStatus } from "@/components/mobile/ops";
-import { useFlags } from "@/lib/client/api";
 import { useMobileTask, type MobileRoute } from "@/lib/client/mobileApi";
 import type { CompletionImpact, MissionActionResult, XpGain } from "@/lib/client/api";
 import { clearProgress, loadProgress, saveProgress, sendOrQueue, type RouteProgress } from "@/lib/client/offline";
@@ -68,7 +66,6 @@ const emptyProgress = (): RouteProgress => ({ phase: "pick", stopIndex: 0, selec
 export default function TaskPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const { data, error } = useMobileTask(id);
-  const flags = useFlags();
   const qc = useQueryClient();
   const [progress, setProgress] = useState<RouteProgress | null>(null);
   const [details, setDetails] = useState(false);
@@ -236,7 +233,6 @@ export default function TaskPage({ params }: { params: Promise<{ id: string }> }
       ) : (
         <div className="card mt-5 p-4 text-center text-[15px] text-ink-2">
           {r.status === "COMPLETED" ? "✓ Задача выполнена" : r.status === "SKIPPED" ? "Задача пропущена" : "Задача устарела — есть более свежий план"}
-          {r.status === "COMPLETED" && !flags.readOnly && <MissionKitShopStatus missionId={r.id} />}
           {r.evaluation && (
             <div className="mt-2 text-[14px]">
               Продано {r.evaluation.lines.reduce((a, l) => a + l.soldAttributed, 0)} из {r.evaluation.lines.reduce((a, l) => a + l.moved, 0)} · {r.evaluation.result}
@@ -545,63 +541,30 @@ function Execution({
 // ───────────────────────── success ─────────────────────────
 
 function Success({ r, result }: { r: MobileRoute; result: { xp: XpGain[]; impact?: CompletionImpact; queued?: boolean; skipped?: boolean } }) {
-  const total = result.xp.reduce((a, g) => a + g.amount, 0);
-  const flags = useFlags();
   return (
     <div className="flex min-h-[100dvh] flex-col bg-bg px-5 pb-[calc(20px+env(safe-area-inset-bottom))] pt-[calc(40px+env(safe-area-inset-top))]">
       <div className={clsx("rise mx-auto grid h-20 w-20 place-items-center rounded-full text-[40px]", result.skipped ? "bg-surface-3 text-ink-2" : "bg-good/20 text-good-ink")}>
         {result.skipped ? "–" : "✓"}
       </div>
-      <h1 className="mt-5 text-center text-[24px] font-extrabold tracking-wide">{result.skipped ? "ТОЧКА ПРОПУЩЕНА" : "ЗАДАЧА ВЫПОЛНЕНА"}</h1>
+      <h1 className="mt-5 text-center text-[24px] font-extrabold tracking-wide">{result.skipped ? "ПРОПУЩЕНО" : "ВЫПОЛНЕНО"}</h1>
       <div className="mt-1 text-center text-[15px] text-ink-3">
         {r.sourceName} → {r.stops.map((s) => s.name).join(" → ")}
       </div>
-
       {result.queued ? (
-        <div className="card mt-6 p-4 text-center text-[15px] text-warn">Нет связи. Результат сохранён на телефоне и отправится автоматически.</div>
+        <div className="card mt-6 p-4 text-center text-[15px] text-warn">Нет связи. Отметка сохранена на телефоне и отправится автоматически.</div>
       ) : result.skipped ? (
-        <p className="mt-6 text-center text-[15px] text-ink-2">Спасибо — это тоже полезная информация: система учтёт её в следующих рекомендациях.</p>
+        <p className="mt-6 text-center text-[15px] text-ink-2">Отметка сохранена — система учтёт её в следующих рекомендациях.</p>
       ) : (
-        <>
-          {flags.rewards && (
-            <>
-              <div className="num mt-6 text-center text-[44px] font-extrabold text-xp">+{total} XP</div>
-              <div className="card mt-4 space-y-2 p-4 text-[15px]">
-                {result.xp.map((g) => (
-                  <div key={g.reason} className="flex justify-between">
-                    <span className="text-ink-2">{g.reason}</span>
-                    <span className="num text-xp">+{g.amount}</span>
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
-          {result.impact && (
-            <div className="mt-4 space-y-2 text-[16px]">
-              {result.impact.savedSales > 0 && <div>🔥 Вы спасли {result.impact.savedSales} потенциальных продаж</div>}
-              {result.impact.wasteReduced > 0 && <div>♻️ Снизили риск списания на {result.impact.wasteReduced} {plural(result.impact.wasteReduced, "позицию", "позиции", "позиций")}</div>}
-              {flags.rewards && result.impact.unlockedAchievements.map((a) => (
-                <div key={a} className="text-serious">🏅 Новое достижение: {a}</div>
-              ))}
-              {flags.rewards && result.impact.unlockedRewards.map((a) => (
-                <div key={a} className="text-xp">🎁 Награда «{a}» разблокирована. Обратитесь к администратору.</div>
-              ))}
-            </div>
-          )}
-          <p className="mt-4 text-[13px] text-ink-3">
-            Отметка сохранена только в Apps Холодосов (в KiT Shop ничего не меняется). Через 2 часа система проверит, продались ли блюда
-            {flags.rewards ? ". За хороший результат будут бонус и OPS POINTS." : "."}
-          </p>
-          {!flags.readOnly && <MissionKitShopStatus missionId={r.id} />}
-        </>
+        <p className="mt-6 text-center text-[15px] text-ink-2">
+          Отметка сохранена в Apps Холодосов. Перемещение в KiT Shop проведите как обычно — приложение в KiT Shop ничего не меняет.
+        </p>
       )}
-
       <div className="mt-auto space-y-2 pt-8">
         <Link href="/m" className="flex h-16 items-center justify-center rounded-2xl bg-ink text-[18px] font-bold text-bg">
-          Следующая задача
+          На главную
         </Link>
         <Link href="/m/tasks" className="flex h-12 items-center justify-center text-[15px] text-ink-3">
-          Все задачи
+          Все перемещения
         </Link>
       </div>
     </div>

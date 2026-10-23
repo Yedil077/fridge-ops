@@ -245,7 +245,8 @@ export type MissionUrgency = "NOW" | "TODAY" | "LATER";
  */
 export type ForecastMode = "realtime" | "h1" | "h2" | "until20" | "activity";
 
-export const FORECAST_MODE_IDS: ForecastMode[] = ["realtime", "h1", "h2", "until20", "activity"];
+/** Modes offered to users: СЕЙЧАС (~next hour) and ДО ВЕЧЕРА (until the time in Настройки). The engine still knows the others. */
+export const FORECAST_MODE_IDS: ForecastMode[] = ["realtime", "until20"];
 
 export interface MissionProduct {
   productId: string;

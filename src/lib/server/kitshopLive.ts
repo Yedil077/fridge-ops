@@ -23,7 +23,7 @@ const BACKLOG_EVERY_MS = 20_000;
 /** no fresh KiT Shop data for this long → the label switches to CACHE */
 export const STALE_AFTER_MS = 15 * 60_000;
 
-export type DataLabel = "KITSHOP REAL" | "CACHE" | "SIMULATOR" | "LOADING";
+export type DataLabel = "KITSHOP REAL" | "CACHE" | "SIMULATOR" | "LOADING" | "UNAVAILABLE";
 
 export interface LiveStatus {
   label: DataLabel;
@@ -54,6 +54,9 @@ export interface LiveStatus {
     /** receipts today / units today (units only from receipts already detailed through GetSaleById) */
     receiptsToday: number;
     unitsToday: number;
+    /** last 60 minutes */
+    receiptsLastHour: number;
+    unitsLastHour: number;
     lastSaleAt: number | null;
   }[];
 }
@@ -153,7 +156,7 @@ export class KitShopLive {
   label(now = this.now()): DataLabel {
     const st = this.ds.state;
     // the first sync has not read stock / receipts yet (catalog alone is not data)
-    if (st.lastSuccessAt === null) return "LOADING";
+    if (st.lastSuccessAt === null) return st.lastError ? "UNAVAILABLE" : "LOADING";
     const failedLast = this.sync.lastTick ? !this.sync.lastTick.steps.some((s) => s.ok && (s.step.startsWith("GetShopStocks") || s.step === "GetSales (новые)")) : false;
     return now - st.lastSuccessAt > STALE_AFTER_MS || failedLast ? "CACHE" : "KITSHOP REAL";
   }
@@ -166,7 +169,7 @@ export class KitShopLive {
       const err = this.ds.state.lastError;
       throw new KitShopNotReadyError(
         err
-          ? `REAL KITSHOP UNAVAILABLE: первая синхронизация не удалась (${err}). Данные симулятора НЕ подставляются.`
+          ? `ДАННЫЕ НЕДОСТУПНЫ: KiT Shop не ответил при первой синхронизации (${err}). Данные симулятора не подставляются.`
           : "Данные KiT Shop загружаются (первая синхронизация). Обновите страницу через минуту. Данные симулятора НЕ подставляются.",
       );
     }
@@ -183,9 +186,17 @@ export class KitShopLive {
     const st = this.ds.state;
     const lastSale = new Map<string, number>();
     const today = new Map<string, { receipts: number; units: number }>();
-    const todayDay = dayNumber(this.now());
+    const hour = new Map<string, { receipts: number; units: number }>();
+    const nowMs = this.now();
+    const todayDay = dayNumber(nowMs);
     for (const s of this.ds.sales.values()) {
       if (s.soldAt > (lastSale.get(s.shopId) ?? 0)) lastSale.set(s.shopId, s.soldAt);
+      if (s.soldAt > nowMs - 3_600_000 && s.soldAt <= nowMs) {
+        const h = hour.get(s.shopId) ?? { receipts: 0, units: 0 };
+        h.receipts++;
+        for (const p of this.ds.positions.get(s.saleId) ?? []) h.units += p.qty;
+        hour.set(s.shopId, h);
+      }
       if (dayNumber(s.soldAt) !== todayDay) continue;
       const t = today.get(s.shopId) ?? { receipts: 0, units: 0 };
       t.receipts++;
@@ -222,6 +233,8 @@ export class KitShopLive {
         stockAt: this.ds.stockAt.get(f.externalId) ?? null,
         receiptsToday: today.get(f.externalId)?.receipts ?? 0,
         unitsToday: Math.round(today.get(f.externalId)?.units ?? 0),
+        receiptsLastHour: hour.get(f.externalId)?.receipts ?? 0,
+        unitsLastHour: Math.round(hour.get(f.externalId)?.units ?? 0),
         lastSaleAt: lastSale.get(f.externalId) ?? null,
       })),
     };

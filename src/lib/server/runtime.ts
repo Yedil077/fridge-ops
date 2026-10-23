@@ -61,6 +61,25 @@ export interface CompletionImpact {
 
 const TZ = process.env.APP_TIMEZONE || "Asia/Almaty";
 
+/** XP / points / rewards / achievements are switched off (a later, separate update). */
+const GAMIFICATION = false;
+
+/**
+ * Free Render stops an idle service after ~15 min without inbound requests — and the 5-minute KiT Shop sync stops with it.
+ * While the server is up it pings its own public URL every 10 min (RENDER_EXTERNAL_URL is set by Render; KEEP_ALIVE_URL
+ * overrides it, KEEP_ALIVE=false switches it off). An external monitor on /api/health is still the backup: a server that
+ * is already asleep cannot wake itself.
+ */
+function startKeepAlive() {
+  const base = process.env.KEEP_ALIVE_URL || process.env.RENDER_EXTERNAL_URL;
+  if (!base || process.env.KEEP_ALIVE === "false") return;
+  const url = `${base.replace(/\/$/, "")}/api/health`;
+  setInterval(() => {
+    fetch(url, { cache: "no-store" }).catch((e) => console.warn("[apps-holodosov] keep-alive ping failed:", e instanceof Error ? e.message : e));
+  }, 10 * 60_000).unref?.();
+  console.info(`[apps-holodosov] keep-alive: ${url} every 10 min`);
+}
+
 class Runtime {
   state: AppState;
   sim: Simulator | null = null;
@@ -119,7 +138,10 @@ class Runtime {
       console.error("[apps-holodosov] could not create the first administrator:", e instanceof Error ? e.message : e, "— check ADMIN_LOGIN (2–32 chars) and ADMIN_PIN (4–8 digits)");
     }
     if (rt.mode === "mock") rt.ensureSim();
-    if (rt.mode === "kitshop" || rt.shadow) kitshopLive(); // starts the 5-minute read-only sync
+    if (rt.mode === "kitshop" || rt.shadow) {
+      kitshopLive(); // starts the 5-minute read-only sync
+      startKeepAlive();
+    }
     rt.save();
     await rt.saving;
     // "что удалить из KiT Shop" Excel: rebuilt by the server once a day (read only), stored in the database
@@ -419,6 +441,7 @@ class Runtime {
   }
 
   private award(user: string, amount: number, points: number, reason: string, missionId: string | null): XpGain {
+    if (!GAMIFICATION) return { amount: 0, points: 0, reason };
     const p = this.player(user);
     p.xp += amount;
     p.points += points;
@@ -429,6 +452,7 @@ class Runtime {
 
   /** Unlocks reward milestones by lifetime points. Never hands out anything by itself. */
   private checkRewards(user: string): string[] {
+    if (!GAMIFICATION) return [];
     const p = this.player(user);
     const unlocked: string[] = [];
     for (const r of ENGINE_CONFIG.rewards) {
@@ -450,6 +474,7 @@ class Runtime {
   }
 
   private unlockAchievements(user: string): string[] {
+    if (!GAMIFICATION) return [];
     const p = this.player(user);
     const got: string[] = [];
     const progress: Record<string, number> = {
@@ -516,6 +541,7 @@ class Runtime {
 
   /** End of day: bonus for the team if ≥ 90% of taken missions were completed. */
   private dayBonus(day: number) {
+    if (!GAMIFICATION) return;
     if (this.state.dayBonusDays.includes(day)) return;
     this.state.dayBonusDays.push(day);
     this.state.dayBonusDays = this.state.dayBonusDays.slice(-60);

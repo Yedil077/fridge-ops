@@ -7,7 +7,7 @@ import { useMe } from "./api";
 
 /**
  * Forecast horizon chosen by the user — always from NOW, any time of day (windows cross midnight):
- * REAL TIME (~90 min) · +1 Ч · +2 Ч · ДО <time from Настройки> · ДО КОНЦА АКТИВНОСТИ (learned from sales).
+ * СЕЙЧАС (about the next hour) · ДО ВЕЧЕРА (until the time from Настройки, default 20:00).
  * Remembered on this device and sent to the server (?mode=…), where it really changes the engine.
  */
 
@@ -70,14 +70,11 @@ export function ModeToggle({ size = "md", className }: { size?: "sm" | "md"; cla
   return (
     <div className={className}>
       <div className="flex gap-1 overflow-x-auto rounded-xl border border-line bg-surface p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" role="group" aria-label="Горизонт прогноза">
-        {btn("realtime", "REAL TIME", "Что сделать сейчас: следующие ~90 минут от текущего времени (в любое время суток)")}
-        {btn("h1", "+1 Ч", "Следующий час от текущего времени")}
-        {btn("h2", "+2 Ч", "Следующие два часа от текущего времени")}
-        {btn("until20", `ДО ${until}`, passed ? `${until} уже прошло — горизонт недоступен до завтра` : `Спрос от текущего времени до ${until} (время меняется в Настройках)`, passed)}
-        {btn("activity", "ДО КОНЦА АКТИВНОСТИ", "До конца обычной активности каждой точки — по реальной истории продаж, в том числе ночью")}
+        {btn("realtime", "СЕЙЧАС", "Что сделать сейчас: примерно ближайший час")}
+        {btn("until20", `ДО ВЕЧЕРА · ${until}`, passed ? `${until} уже прошло — режим недоступен до завтра` : `Как распределить еду до ${until} (время меняется в Настройках)`, passed)}
       </div>
       {mode === "until20" && passed && (
-        <p className="mt-1 px-1 text-[12px] text-warn">{until} уже прошло — горизонт «ДО {until}» закончился, показан REAL TIME.</p>
+        <p className="mt-1 px-1 text-[12px] text-warn">{until} уже прошло — режим «ДО ВЕЧЕРА» закончился, показан режим «СЕЙЧАС».</p>
       )}
     </div>
   );

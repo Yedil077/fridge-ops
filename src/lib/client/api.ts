@@ -40,13 +40,13 @@ export interface Me {
   role: "EMPLOYEE" | "MANAGER" | "ADMIN";
   mode: string;
   /** where the numbers on screen come from — never mixed silently */
-  dataSource?: "KITSHOP REAL" | "SIMULATOR" | "CACHE" | "LOADING";
+  dataSource?: "KITSHOP REAL" | "SIMULATOR" | "CACHE" | "LOADING" | "UNAVAILABLE";
+  /** server wall-clock now (same clock as lastSyncAt) */
+  serverNow?: number;
   /** wall-clock ms of the last successful KiT Shop sync (CACHE label shows it) */
   lastSyncAt?: number | null;
   /** KiT Shop is read-only: no load / unload / write-off buttons */
   readOnly?: boolean;
-  /** show XP / rewards (off by default) */
-  rewards?: boolean;
   /** closing time from Настройки, e.g. "20:00" — label of the second forecast mode */
   closeTime?: string;
   /** clock time of the "ДО HH:MM" user mode (Настройки) */
@@ -56,13 +56,14 @@ export interface Me {
 }
 
 export function useMe() {
-  return useQuery({ queryKey: ["me"], queryFn: () => api<Me>("/api/auth/me"), staleTime: 5 * 60_000 });
+  // refreshed every minute: the "Последнее обновление" label on every screen reads it
+  return useQuery({ queryKey: ["me"], queryFn: () => api<Me>("/api/auth/me"), staleTime: 60_000, refetchInterval: 60_000 });
 }
 
-/** UI switches. Until /me answers: read-only and no rewards (the safe side). */
+/** UI switches. Until /me answers: read-only (the safe side). */
 export function useFlags() {
   const me = useMe().data;
-  return { readOnly: me?.readOnly ?? true, rewards: me?.rewards ?? false };
+  return { readOnly: me?.readOnly ?? true };
 }
 
 export const atLeast = (me: Me | undefined, role: Me["role"]) =>
