@@ -32,7 +32,9 @@ export function readKitShopConfig(): KitShopConfig {
     KITSHOP_PASSWORD: process.env.KITSHOP_PASSWORD,
   });
   return {
-    enabled: env.KITSHOP_ENABLED === "true",
+    // reading is ON when asked explicitly, or when the app is told to show / shadow real KiT Shop data
+    // (DATA_SOURCE=kitshop | kitshop_shadow). Writes never follow from this: they have their own gate + KITSHOP_READ_ONLY.
+    enabled: env.KITSHOP_ENABLED === "true" || process.env.DATA_SOURCE === "kitshop" || process.env.DATA_SOURCE === "kitshop_shadow",
     baseUrl: env.KITSHOP_API_URL || DEFAULT_BASE_URL,
     companyId: env.KITSHOP_COMPANY_ID ?? "",
     login: env.KITSHOP_LOGIN ?? "",

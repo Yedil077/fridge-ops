@@ -18,6 +18,7 @@ import { adapterFor, catalogAdapter, kitshopReadOnly, mockAdapter, trustAbsent, 
 import { addProductBody } from "../kitshop-ops/adapters";
 import type { CatalogProductInput } from "../kitshop-ops/types";
 import { newId } from "./pin";
+import { readKitShopConfig } from "@/services/kitshop/config";
 import { autoUnusedReport } from "./unusedReport";
 
 /**
@@ -139,6 +140,13 @@ class Runtime {
       console.error("[apps-holodosov] could not create the first administrator:", e instanceof Error ? e.message : e, "— check ADMIN_LOGIN (2–32 chars) and ADMIN_PIN (4–8 digits)");
     }
     if (rt.mode === "mock") rt.ensureSim();
+    if (rt.mode === "kitshop" || rt.shadow) {
+      const c = readKitShopConfig();
+      // what the server sees (never the values): helps when Render variables are missing or misspelled
+      console.info(
+        `[apps-holodosov] KiT Shop reading ${c.enabled ? "ON" : "OFF"} · company id ${c.companyId ? "set" : "MISSING"} · login ${c.login ? "set" : "MISSING"} · password ${c.password ? "set" : "MISSING"} · ${new URL(c.baseUrl).host}`,
+      );
+    }
     if (rt.mode === "kitshop" || rt.shadow) kitshopLive(); // starts the 5-minute read-only sync
     // in every mode: a sleeping free server makes the phone app open on "нет связи" while it wakes up (30–60 s)
     startKeepAlive();
