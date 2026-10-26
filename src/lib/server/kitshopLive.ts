@@ -3,7 +3,7 @@ import { Pool } from "pg";
 import type { Fridge, NetworkSnapshot } from "../domain/types";
 import { KsDataset } from "../kitshop-data/dataset";
 import { FileKsRepo, PgKsRepo, type KsRepo } from "../kitshop-data/repo";
-import { buildKitShopSnapshot } from "../kitshop-data/snapshot";
+import { buildKitShopSnapshot, isFood } from "../kitshop-data/snapshot";
 import { KitShopSync, syncOptionsFromEnv, type SyncDeps, type SyncOptions, type TickResult } from "../kitshop-data/sync";
 import { configuredFridges } from "../simulator/model";
 import { dayNumber, wallClockNow } from "../time";
@@ -229,7 +229,13 @@ export class KitShopLive {
         name: f.name,
         shopId: f.externalId,
         inKitShop: this.ds.shops.has(f.externalId),
-        stockItems: [...(this.ds.stock.get(f.externalId)?.values() ?? [])].reduce((a, b) => a + b, 0),
+        // dishes only (cutlery, bags, zero-price items are not food) — the number to compare with KiT Shop
+        stockItems: [...(this.ds.stock.get(f.externalId)?.entries() ?? [])]
+          .filter(([pid]) => {
+            const p = this.ds.products.get(pid);
+            return !p || isFood(p.name, p.price);
+          })
+          .reduce((a, [, q]) => a + q, 0),
         stockAt: this.ds.stockAt.get(f.externalId) ?? null,
         receiptsToday: today.get(f.externalId)?.receipts ?? 0,
         unitsToday: Math.round(today.get(f.externalId)?.units ?? 0),

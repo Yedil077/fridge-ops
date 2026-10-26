@@ -131,7 +131,7 @@ export function SyncStatus() {
                 <th className="py-1">Точка</th>
                 <th>ShopId</th>
                 <th>В KiT Shop</th>
-                <th className="text-right">Остаток, шт</th>
+                <th className="text-right">Блюд в остатке (без приборов)</th>
                 <th>Остатки на</th>
                 <th className="text-right">Сегодня: чеков / шт</th>
                 <th className="text-right">За час: чеков / шт</th>
