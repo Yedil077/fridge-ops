@@ -24,7 +24,8 @@ export interface KitShopConfig {
 
 export function readKitShopConfig(): KitShopConfig {
   const env = EnvSchema.parse({
-    KITSHOP_ENABLED: process.env.KITSHOP_ENABLED ?? "false",
+    // tolerant for the READ switch only: "True", " true", "\"true\"" typed in a hosting panel all mean true
+    KITSHOP_ENABLED: (process.env.KITSHOP_ENABLED ?? "false").trim().replace(/^["']|["']$/g, "").toLowerCase() || "false",
     KITSHOP_API_URL: process.env.KITSHOP_API_URL ?? "",
     KITSHOP_COMPANY_ID: process.env.KITSHOP_COMPANY_ID,
     KITSHOP_LOGIN: process.env.KITSHOP_LOGIN,

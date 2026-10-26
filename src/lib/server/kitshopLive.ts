@@ -132,6 +132,8 @@ export class KitShopLive {
   private async runTick(force: { catalog?: boolean } = {}): Promise<TickResult> {
     await this.loaded;
     const res = await this.sync.tick(force);
+    // another pass is already running (start-up timer and a health ping at the same moment): not an error, nothing to log
+    if (res.steps.length === 1 && res.steps[0].step === "busy") return res;
     const failed = res.steps.filter((s) => !s.ok);
     console.info(
       `[kitshop-sync] ${res.ok ? "ok" : "partial"} in ${res.ms} ms · ${res.steps.map((s) => `${s.step}=${s.ok ? s.count : "ERR"}`).join(" ")} · backlog ${res.backlog.undetailed} receipts, ${res.backlog.backfillDaysLeft} days`,
