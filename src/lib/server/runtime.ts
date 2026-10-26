@@ -65,7 +65,8 @@ const TZ = process.env.APP_TIMEZONE || "Asia/Almaty";
 const GAMIFICATION = false;
 
 /**
- * Free Render stops an idle service after ~15 min without inbound requests — and the 5-minute KiT Shop sync stops with it.
+ * Free Render stops an idle service after ~15 min without inbound requests: the 5-minute KiT Shop sync stops with it, and the
+ * phone app then opens while the server is still waking up (30–60 s) and shows "нет связи".
  * While the server is up it pings its own public URL every 10 min (RENDER_EXTERNAL_URL is set by Render; KEEP_ALIVE_URL
  * overrides it, KEEP_ALIVE=false switches it off). An external monitor on /api/health is still the backup: a server that
  * is already asleep cannot wake itself.
@@ -138,10 +139,9 @@ class Runtime {
       console.error("[apps-holodosov] could not create the first administrator:", e instanceof Error ? e.message : e, "— check ADMIN_LOGIN (2–32 chars) and ADMIN_PIN (4–8 digits)");
     }
     if (rt.mode === "mock") rt.ensureSim();
-    if (rt.mode === "kitshop" || rt.shadow) {
-      kitshopLive(); // starts the 5-minute read-only sync
-      startKeepAlive();
-    }
+    if (rt.mode === "kitshop" || rt.shadow) kitshopLive(); // starts the 5-minute read-only sync
+    // in every mode: a sleeping free server makes the phone app open on "нет связи" while it wakes up (30–60 s)
+    startKeepAlive();
     rt.save();
     await rt.saving;
     // "что удалить из KiT Shop" Excel: rebuilt by the server once a day (read only), stored in the database

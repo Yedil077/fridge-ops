@@ -33,10 +33,11 @@ fs.writeFileSync(
 
 fs.writeFileSync(
   path.join(out, "offline.html"),
-  page("Нет связи", `<div class="logo">❄</div><h1>Нет связи с сервером</h1>
-<p>Проверьте интернет. Отмеченные позиции в начатой задаче сохранены на телефоне и отправятся, когда связь вернётся.</p>
-<button onclick="location.replace(${target})">Повторить</button>
-<script>window.addEventListener("online",function(){location.replace(${target})});</script>`),
+  page("Нет связи", `<div class="logo">❄</div><h1>Подключаюсь к серверу…</h1>
+<p>Если сервер долго не открывался, он просыпается — это до минуты. Повторяю автоматически каждые 5 секунд.</p>
+<p>Если долго не получается — проверьте интернет. Отмеченные позиции в начатой задаче сохранены на телефоне.</p>
+<button onclick="location.replace(${target})">Повторить сейчас</button>
+<script>setTimeout(function(){location.replace(${target})},5000);window.addEventListener("online",function(){location.replace(${target})});</script>`),
 );
 
 console.log(`capacitor-www ready → ${url}`);
