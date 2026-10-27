@@ -11,7 +11,7 @@ import { DataSourceBadge } from "@/components/DataSourceBadge";
 
 const NAV = [
   { href: "/", label: "Главная", short: "🏠", role: "MANAGER" as const },
-  { href: "/analytics", label: "Аналитика", short: "📊", role: "ADMIN" as const },
+  { href: "/analytics", label: "Аналитика", short: "📊", role: "MANAGER" as const },
   { href: "/reports/unused", label: "Неиспользуемые блюда", short: "📄", role: "MANAGER" as const },
   { href: "/admin", label: "Настройки", short: "⚙️", role: "ADMIN" as const },
 ];
@@ -47,8 +47,8 @@ export function Shell({
                     active ? "bg-surface-3 text-ink" : "text-ink-3 hover:text-ink",
                   )}
                 >
-                  <span className="hidden sm:inline">{n.label}</span>
-                  <span className="sm:hidden">{n.short}</span>
+                  <span className="hidden xl:inline">{n.label}</span>
+                  <span className="xl:hidden" title={n.label}>{n.short}</span>
                 </Link>
               );
             })}

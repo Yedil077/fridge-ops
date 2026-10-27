@@ -9,7 +9,7 @@ const PUBLIC = ["/login", "/api/auth/login", "/api/health", "/manifest.webmanife
 /** Desktop areas and the minimum role for them (routing only — APIs enforce roles themselves). */
 const DESKTOP_AREAS: { prefix: string; role: "MANAGER" | "ADMIN" }[] = [
   { prefix: "/admin", role: "ADMIN" },
-  { prefix: "/analytics", role: "ADMIN" },
+  { prefix: "/analytics", role: "MANAGER" },
   { prefix: "/fridges", role: "MANAGER" },
   { prefix: "/reports", role: "MANAGER" },
 ];
