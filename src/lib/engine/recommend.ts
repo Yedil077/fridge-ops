@@ -16,14 +16,14 @@ import { distanceFactor } from "./distance";
 import { rateAt, sumAcross } from "./forecast";
 import { sameWeekdayWindowSales, type EngineContext } from "./history";
 import { productModel, type ProductModel } from "./products";
-import { demandGrid, horizonOfMode, productNeed, productSurplus, type DemandCell } from "./demand";
+import { demandGrid, horizonOfMode, type DemandCell, type ProductCell } from "./demand";
 import { wasteUnits } from "./risk";
 
 /**
  * Recommendation engine.
- *  1. Category level: need and safe surplus come ONLY from engine/demand.ts (the same numbers the fridge profile shows).
- *     need ≤ 0 → no task for that target; safe surplus ≤ 0 → that shop is not a source.
- *  2. Product level: WHICH dishes to take — the dish-level formulas of engine/demand.ts, ranked by fridge × product affinity.
+ *  1. Need and safe surplus come ONLY from engine/demand.ts, which is built on the product analytics (norm per dish per
+ *     fridge): a category is the sum of its dishes. need ≤ 0 → no task for that target; surplus ≤ 0 → not a source.
+ *  2. Product level: a dish moves only if the target needs THAT dish and the source has THAT dish beyond its keep.
  *  3. Routes: moves from the same pick-up fridge are merged into one route with ordered stops.
  */
 
@@ -153,19 +153,23 @@ export function buildSlots(
   reservations: Reservation[],
   mode: ForecastMode = "realtime",
   untilMinute?: number,
-): Slot[][] {
-  return demandGrid(ctx, forecasts, { horizon: horizonOfMode(mode), untilMinute: untilMinute ?? DEFAULT_UNTIL_MINUTE, promised: reservations }).map((row) =>
-    row.map((cell) => ({ ...cell, deficit: cell.need, surplus: cell.surplus, cover: cell.expected })),
-  );
+): { slots: Slot[][]; prod: (ProductCell | undefined)[] } {
+  const grid = demandGrid(ctx, forecasts, { horizon: horizonOfMode(mode), untilMinute: untilMinute ?? DEFAULT_UNTIL_MINUTE, promised: reservations });
+  return {
+    slots: grid.cells.map((row) => row.map((cell) => ({ ...cell, deficit: cell.need, surplus: cell.surplus, cover: cell.expected }))),
+    prod: grid.products,
+  };
 }
 
 // ───────────────────────── product-level allocation ─────────────────────────
 
 interface ProductLedger {
-  /** units already promised away from a source, F*P */
+  /** units this analysis already took from a source, F*P (open transfers are already inside the demand cells) */
   taken: Float64Array;
-  /** units already promised to a target, F*P */
+  /** units this analysis already sent to a target, F*P */
   sent: Float64Array;
+  /** the product cells of engine/demand.ts */
+  prod: (ProductCell | undefined)[];
 }
 
 interface Alloc {
@@ -175,8 +179,8 @@ interface Alloc {
 
 /**
  * Picks concrete dishes for a category move.
- * A dish goes to the target only if the target NEEDS it (need = demand share + safety − stock − already sent)
- * and the source has it BEYOND its own keep for that dish. Ranked by target affinity.
+ * A dish goes to the target only if the target NEEDS that dish (product cell need − already sent in this analysis)
+ * and the source has that dish BEYOND its own keep (product cell surplus − already taken). Capped per dish.
  */
 function allocateProducts(
   ctx: EngineContext,
@@ -190,12 +194,12 @@ function allocateProducts(
   maxQty: number,
 ): Alloc[] {
   const { P } = ctx;
+  const K = ENGINE_CONFIG.conservative;
   const prods = ctx.catProducts[c];
-  const src = slots[s][c];
   const tgt = slots[t][c];
-  // VARIETY: the source keeps at least 1-2 of every dish; last units move only for a critical shortage (engine/demand.ts)
-  const surplus = prods.map((p) => productSurplus(src, pm.share[s * P + p], ctx.snap.stock[s * P + p] - ledger.taken[s * P + p], tgt.critical));
-  const want = prods.map((p) => productNeed(tgt, pm.share[t * P + p], ctx.snap.stock[t * P + p] + ledger.sent[t * P + p]));
+  const cap = tgt.critical ? K.maxPerProductCritical : K.maxPerProduct;
+  const surplus = prods.map((p) => Math.min(cap, (ledger.prod[s * P + p]?.surplus ?? 0) - ledger.taken[s * P + p]));
+  const want = prods.map((p) => (ledger.prod[t * P + p]?.need ?? 0) - ledger.sent[t * P + p]);
   const alloc = prods.map(() => 0);
   let total = 0;
   while (total < maxQty) {
@@ -292,6 +296,7 @@ function explainLine(
   pm: ProductModel,
   forecasts: FridgeForecast[],
   slots: Slot[][],
+  prod: (ProductCell | undefined)[],
   pairStats: Record<string, PairStat>,
   cand: Candidate,
 ): MissionLine {
@@ -360,8 +365,16 @@ function explainLine(
   if (tgt.confidence < 0.7) decision.push({ label: "Осторожность", value: "низкая уверенность → объём снижен" });
   if (pf.stat && pf.stat.moved >= 5)
     decision.push({ label: "Этот маршрут раньше", value: `продано ${pf.stat.sold} из ${pf.stat.moved} (${Math.round((pf.stat.sold / pf.stat.moved) * 100)}%)` });
-  for (const p of products.slice(0, 3))
-    decision.push({ label: `${p.name}`, value: `${tgtF.name}: ${r1(p.targetPerDay)}/день · ${srcF.name}: ${r1(p.sourcePerDay)}/день` });
+  // the product analytics numbers behind every dish (the same as on the analytics screen)
+  for (const a of cand.products.slice(0, 4)) {
+    const tc = prod[t * P + a.productIndex];
+    const sc = prod[s * P + a.productIndex];
+    if (!tc || !sc) continue;
+    decision.push({
+      label: ctx.snap.products[a.productIndex].name,
+      value: `${tgtF.name}: нужно ${tc.target}, есть ${tc.stock} → +${tc.need} · ${srcF.name}: есть ${sc.stock}, себе ${sc.keep} → можно ${sc.surplus}`,
+    });
+  }
   decision.push({ label: "Рекомендуем", value: `${qty} шт.`, emphasis: true });
 
   // short plain sentences for the phone
@@ -496,13 +509,8 @@ export function recommend(
 ): MissionDraft[] {
   const T = ENGINE_CONFIG.transfer;
   const pm = productModel(ctx);
-  const slots = buildSlots(ctx, forecasts, reservations, opts.mode, opts.untilMinute);
-  const ledger: ProductLedger = { taken: new Float64Array(ctx.F * ctx.P), sent: new Float64Array(ctx.F * ctx.P) };
-  for (const r of reservations)
-    for (const p of r.products ?? []) {
-      ledger.taken[r.sourceIndex * ctx.P + p.productIndex] += p.qty;
-      ledger.sent[r.targetIndex * ctx.P + p.productIndex] += p.qty;
-    }
+  const { slots, prod } = buildSlots(ctx, forecasts, reservations, opts.mode, opts.untilMinute);
+  const ledger: ProductLedger = { taken: new Float64Array(ctx.F * ctx.P), sent: new Float64Array(ctx.F * ctx.P), prod };
 
   const chosen: Candidate[] = [];
   const blockedAsSource = new Set<string>(); // "f:c" — a target of c must not also give c away
@@ -568,7 +576,8 @@ export function recommend(
   }
 
   // explanations describe the state before this analysis' picks
-  const baseSlots = buildSlots(ctx, forecasts, reservations, opts.mode, opts.untilMinute);
+  const base = buildSlots(ctx, forecasts, reservations, opts.mode, opts.untilMinute);
+  const baseSlots = base.slots;
   const drafts: MissionDraft[] = [];
   for (const [s, targets] of stopsBySource) {
     const cands = chosen.filter((x) => x.s === s);
@@ -579,7 +588,7 @@ export function recommend(
     const allLines = cands.map((x) => ({ c: x.c, qty: x.qty }));
     for (const [oi, { t, leg }] of ordered.entries()) {
       const stopCands = cands.filter((x) => x.t === t).sort((a, b) => b.priority - a.priority);
-      lines.push(...stopCands.map((cnd) => explainLine(ctx, pm, forecasts, baseSlots, pairStats, cnd)));
+      lines.push(...stopCands.map((cnd) => explainLine(ctx, pm, forecasts, baseSlots, base.prod, pairStats, cnd)));
       stops.push({ targetFridgeId: ctx.snap.fridges[t].id, travelMinutes: leg, deliveredAt: null });
       effect.push(...effectOf(ctx, forecasts, s, t, stopCands.map((x) => ({ c: x.c, qty: x.qty })), oi === 0 ? allLines : null));
     }

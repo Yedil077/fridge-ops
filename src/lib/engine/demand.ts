@@ -1,22 +1,23 @@
 import { ENGINE_CONFIG } from "../config/engine";
 import type { ForecastMode, FridgeForecast } from "../domain/types";
-import { sumAcross } from "./forecast";
+import { sumWindow } from "./forecast";
 import type { EngineContext } from "./history";
+import { productStats, type ProductStat } from "./productNorm";
 
 /**
  * DEMAND — the ONE source of truth for "how much is needed / how much can be given".
- * The fridge profile, the transfer recommendations and every screen read these numbers; nothing else computes them.
+ * Built on the PRODUCT analytics (engine/productNorm.ts): every dish in every fridge has its norm per day; the transfer
+ * recommendations and the analytics screen read these numbers; nothing else computes them.
  *
- * Two horizons: NOW (~90 min from now) and UNTIL_EVENING (until the time in Настройки, default 20:00).
- * For one shop × category × horizon:
- *   expected_demand = forecast for [now, end)  (fridge's own profile × today's pace × trend)
- *   projected_stock = current_stock + already promised in − expected_demand
- *   need_quantity   = ceil(expected_demand + safety_stock − (current_stock + promised in)),
- *                     only if the fridge is active now and the demand in the window is real (≥ minDemandInWindow)
- *   keep            = max(expected_demand_upper + safety_stock, minimum display stock,
- *                         NOW: half of the demand until the end of today's activity)
- *   safe_surplus    = floor(current_stock − promised out − keep)   (≤ 0 → the shop cannot be a source)
- * A shop never needs and gives the same category at the same time.
+ * For one fridge × dish:
+ *   share of today left = the fridge's usual sales from now until the end of the horizon ÷ its usual day
+ *   target   = rate × share  →  0 below 0.3, otherwise max(1, ⌈x − 0.2⌉)      ("сегодня рекомендуется иметь")
+ *   need     = target − stock − already promised in   (only while the fridge sells now)
+ *   keep     = what it sells until the end of today (target of today), at least 1 of a dish it normally sells
+ *   surplus  = stock − promised out − keep            (≤ 0 → it cannot be a source of this dish)
+ * A category is just the sum of its dishes: a need for salads is "Цезарь +2, Сельдь +1", never "any 3 salads".
+ *
+ * Horizons: NOW = the rest of today; UNTIL_EVENING = until the time in Настройки (after it: the rest of today).
  */
 
 export type Horizon = "NOW" | "UNTIL_EVENING";
@@ -30,6 +31,23 @@ export interface Promised {
   targetIndex: number;
   categoryIndex: number;
   qty: number;
+  products?: { productIndex: number; qty: number }[];
+}
+
+export interface ProductCell {
+  f: number;
+  p: number;
+  stock: number;
+  /** expected sales of the dish in the horizon (rate × share) */
+  expected: number;
+  /** what the fridge should have now for the horizon */
+  target: number;
+  need: number;
+  keep: number;
+  surplus: number;
+  inbound: number;
+  outbound: number;
+  reason: string;
 }
 
 export interface DemandCell {
@@ -49,96 +67,124 @@ export interface DemandCell {
   sourceEligible: boolean;
   inbound: number;
   outbound: number;
-  /** one plain sentence: why this need / surplus */
+  /** one plain sentence: why this need / surplus (lists the dishes) */
   reason: string;
 }
 
-/** Window end for a horizon: [now, end); may pass midnight. "ДО ВЕЧЕРА" after that time falls back to NOW. */
-export function horizonEnd(h: Horizon, nowMinute: number, untilMinute: number): number {
-  const realtime = nowMinute + ENGINE_CONFIG.transfer.realtimeHorizonMinutes;
-  if (h === "UNTIL_EVENING") return untilMinute > nowMinute ? untilMinute : realtime;
-  return realtime;
+export interface DemandGrid {
+  /** fridge × category = sum of its dishes */
+  cells: DemandCell[][];
+  /** F*P, undefined = the dish has nothing to do with this fridge */
+  products: (ProductCell | undefined)[];
 }
 
+/** End of the horizon (minutes from today's 00:00, never past midnight). */
+export function horizonEnd(h: Horizon, nowMinute: number, untilMinute: number): number {
+  if (h === "UNTIL_EVENING" && untilMinute > nowMinute) return untilMinute;
+  return 1440;
+}
+
+/** Share of a usual day of this fridge that is still ahead in [now, end). Weak days (e.g. Saturday) give a small share. */
+export function shareLeft(ff: FridgeForecast, nowMinute: number, end: number): number {
+  const curve = new Array<number>(24).fill(0);
+  for (const cf of ff.categories) cf.normalHourly.forEach((v, h) => (curve[h] += v));
+  const day = curve.reduce((a, b) => a + b, 0);
+  const denom = Math.max(day, ff.typicalDayTotal);
+  if (denom <= 0) return 0;
+  return Math.min(1, sumWindow(curve, nowMinute, end) / denom);
+}
+
+/** Units to have for an expected x: nothing for a fraction of a sale, at least 1 otherwise. */
+export const targetUnits = (x: number) => (x < 0.3 ? 0 : Math.max(1, Math.ceil(x - 0.2)));
+
 const r1 = (x: number) => Math.round(x * 10) / 10;
+
+function fmt(m: number): string {
+  if (m >= 1440) return "конца дня";
+  const x = ((Math.round(m) % 1440) + 1440) % 1440;
+  return `${String(Math.floor(x / 60)).padStart(2, "0")}:${String(x % 60).padStart(2, "0")}`;
+}
 
 export function demandGrid(
   ctx: EngineContext,
   forecasts: FridgeForecast[],
   opts: { horizon: Horizon; untilMinute: number; promised?: Promised[] },
-): DemandCell[][] {
+): DemandGrid {
   const T = ENGINE_CONFIG.transfer;
-  const K = ENGINE_CONFIG.conservative;
-  const inbound = forecasts.map(() => new Array<number>(ctx.C).fill(0));
-  const outbound = forecasts.map(() => new Array<number>(ctx.C).fill(0));
-  for (const r of opts.promised ?? []) {
-    inbound[r.targetIndex][r.categoryIndex] += r.qty;
-    outbound[r.sourceIndex][r.categoryIndex] += r.qty;
-  }
+  const stats = productStats(ctx);
+  const { F, P } = ctx;
+  const inbound = new Float64Array(F * P);
+  const outbound = new Float64Array(F * P);
+  for (const r of opts.promised ?? [])
+    for (const x of r.products ?? []) {
+      inbound[r.targetIndex * P + x.productIndex] += x.qty;
+      outbound[r.sourceIndex * P + x.productIndex] += x.qty;
+    }
   const end = horizonEnd(opts.horizon, ctx.nowMinute, opts.untilMinute);
-  return forecasts.map((ff, f) =>
-    ff.categories.map((cf, c) => {
-      const cat = ctx.snap.categories[c];
-      const targetEligible = ff.isOpenNow && ff.minutesToClose >= T.minTargetOpenMinutes;
-      const sourceEligible = ff.isOpenNow || (T.allowClosedSource && ff.isWorkingToday);
-      const expected = sumAcross(cf.forecastHourly, cf.tomorrowHourly, ctx.nowMinute, end);
-      const stockIn = cf.stock + inbound[f][c];
-      const demandOk = expected >= K.minDemandInWindow;
-      const need = targetEligible && demandOk ? Math.max(0, Math.ceil(expected + cf.safetyStock - stockIn)) : 0;
-      const upper = expected * (1 + (1 - cf.confidence) * 0.5);
-      const minDisplay = K.minDisplayStock[cat.id];
-      const keep = Math.max(upper + cf.safetyStock, minDisplay, opts.horizon === "NOW" ? 0.5 * cf.expectedUntilClose : 0);
-      const rawSurplus = sourceEligible ? Math.max(0, Math.floor(cf.stock - outbound[f][c] - keep)) : 0;
-      const surplus = need > 0 ? 0 : rawSurplus;
-      const critical = targetEligible && cf.expected2h >= 1 && cf.minutesToEmpty !== null && cf.minutesToEmpty <= K.criticalMinutes;
+  const catIdx = new Map(ctx.snap.categories.map((c, i) => [c.id, i]));
+  const products: (ProductCell | undefined)[] = new Array(F * P);
+
+  const cells: DemandCell[][] = forecasts.map((ff, f) => {
+    const targetEligible = ff.isOpenNow && ff.minutesToClose >= T.minTargetOpenMinutes;
+    const sourceEligible = ff.isOpenNow || (T.allowClosedSource && ff.isWorkingToday);
+    const share = shareLeft(ff, ctx.nowMinute, end);
+    const shareDay = shareLeft(ff, ctx.nowMinute, 1440);
+    const perCat = ctx.snap.categories.map(() => [] as ProductCell[]);
+    for (let p = 0; p < P; p++) {
+      const st: ProductStat | undefined = stats.at[f * P + p];
+      if (!st) continue;
+      const stock = ctx.snap.stock[f * P + p];
+      const inb = inbound[f * P + p];
+      const outb = outbound[f * P + p];
+      const expected = st.rateAdj * share;
+      const target = targetUnits(expected);
+      const need = targetEligible ? Math.max(0, target - stock - inb) : 0;
+      const keep = Math.max(targetUnits(st.rateAdj * shareDay), st.norm.rec >= 1 && stock > 0 ? 1 : 0);
+      const surplus = sourceEligible ? Math.max(0, Math.floor(stock - outb - keep)) : 0;
       const reason =
         need > 0
-          ? `есть ${stockIn}, до ${fmt(end)} обычно продаётся ~${r1(expected)} + запас ${r1(cf.safetyStock)} → нужно ${need}`
+          ? `норма ${st.norm.rec}/день, до ${fmt(end)} нужно ${target}, есть ${stock + inb} → +${need}`
           : surplus > 0
-            ? `есть ${cf.stock}, себе оставляем ${Math.ceil(keep)} (продажи до ${fmt(end)} с запасом и минимум на витрине) → можно отдать ${surplus}`
+            ? `есть ${stock}, до конца дня себе ${keep} → можно отдать ${surplus}`
+            : target > 0 && !targetEligible
+              ? "сейчас продаж нет"
+              : `есть ${stock + inb}, до ${fmt(end)} нужно ${target} — хватает`;
+      const cell: ProductCell = { f, p, stock, expected: r1(expected), target, need, keep, surplus, inbound: inb, outbound: outb, reason };
+      products[f * P + p] = cell;
+      perCat[catIdx.get(ctx.snap.products[p].categoryId)!].push(cell);
+    }
+    return ff.categories.map((cf, c) => {
+      const list = perCat[c];
+      const sum = (k: "stock" | "expected" | "need" | "surplus" | "keep" | "inbound" | "outbound") => list.reduce((a, x) => a + x[k], 0);
+      const need = sum("need");
+      const surplus = sum("surplus");
+      const expected = sum("expected");
+      const name = (x: ProductCell) => ctx.snap.products[x.p].name;
+      const reason =
+        need > 0
+          ? `нужно ${need}: ${list.filter((x) => x.need > 0).sort((a, b) => b.need - a.need).slice(0, 4).map((x) => `${name(x)} +${x.need}`).join(", ")}`
+          : surplus > 0
+            ? `можно отдать ${surplus}: ${list.filter((x) => x.surplus > 0).sort((a, b) => b.surplus - a.surplus).slice(0, 4).map((x) => `${name(x)} ×${x.surplus}`).join(", ")}`
             : !targetEligible && !ff.isOpenNow
-              ? "сейчас продаж обычно нет"
-              : !demandOk
-                ? `до ${fmt(end)} спроса почти нет (~${r1(expected)})`
-                : `есть ${cf.stock}, до ${fmt(end)} обычно ~${r1(expected)} — хватает`;
+              ? "сейчас продаж нет"
+              : "по каждому блюду хватает";
       return {
         stock: cf.stock,
         expected: r1(expected),
-        safety: r1(cf.safetyStock),
-        projected: Math.round(stockIn - expected),
+        safety: 0,
+        projected: Math.round(cf.stock + sum("inbound") - expected),
         need,
         surplus,
-        keep,
+        keep: sum("keep"),
         confidence: cf.confidence,
-        critical,
+        critical: targetEligible && cf.expected2h >= 1 && cf.minutesToEmpty !== null && cf.minutesToEmpty <= ENGINE_CONFIG.conservative.criticalMinutes,
         targetEligible,
         sourceEligible,
-        inbound: inbound[f][c],
-        outbound: outbound[f][c],
+        inbound: sum("inbound"),
+        outbound: sum("outbound"),
         reason,
       };
-    }),
-  );
-}
-
-function fmt(m: number): string {
-  const x = ((Math.round(m) % 1440) + 1440) % 1440;
-  return `${String(Math.floor(x / 60)).padStart(2, "0")}:${String(x % 60).padStart(2, "0")}`;
-}
-
-/**
- * Dish level, same formulas split by the dish's share in the category at that shop:
- *   product need    = ceil(expected × share + safety × share − (stock + already sent))
- *   product surplus = min(perProductCap, floor(stock − max(keep × share, minimum kept of that dish)))
- * The source always keeps 1–2 of every dish (variety); its last units move only for a critical shortage.
- */
-export function productNeed(cell: DemandCell, share: number, have: number): number {
-  return Math.ceil(cell.expected * share + cell.safety * share - have);
-}
-
-export function productSurplus(sourceCell: DemandCell, share: number, stock: number, critical: boolean): number {
-  const K = ENGINE_CONFIG.conservative;
-  const minKeep = stock <= 0 ? 0 : critical ? 1 : stock >= K.plentyThreshold ? K.minKeepPerProductWhenPlenty : K.minKeepPerProduct;
-  const cap = critical ? K.maxPerProductCritical : K.maxPerProduct;
-  return Math.min(cap, Math.floor(stock - Math.max(sourceCell.keep * share, minKeep)));
+    });
+  });
+  return { cells, products };
 }

@@ -1,9 +1,10 @@
 import { CATEGORIES } from "../domain/categories";
-import type { Fridge, NetworkSnapshot, Product } from "../domain/types";
+import type { Fridge, NetworkSnapshot, Product, ProductDays } from "../domain/types";
 import { buildTravelMatrix } from "../engine/distance";
 import { dayNumber, minuteOfDay } from "../time";
 import { categorizeProduct } from "@/services/kitshop/adapter";
 import type { KsDataset } from "./dataset";
+import { buildTimeline, type TimelineInput } from "./stockTimeline";
 
 /**
  * NetworkSnapshot built ONLY from the real KiT Shop copy (no simulator anywhere).
@@ -11,7 +12,8 @@ import type { KsDataset } from "./dataset";
  *  • products: food items that sold in 180 days or are in stock now (non-food like cutlery excluded);
  *  • history: fridge × category × day × hour and fridge × product × day from receipt positions (GetSaleById);
  *  • today: sales by quarter-hour and product, revenue; current stock from GetShopStocks.
- * Stock-out quarters are unknown in KiT Shop data → left empty (demand is not censored).
+ *  • productDays: availability per dish and day (5-minute stock history + reconstruction from receipts and loads /
+ *    unloads), loads, unloads and confirmed write-offs — the base of the product analytics.
  */
 
 export const HISTORY_DAYS = 180;
@@ -132,6 +134,8 @@ export function buildKitShopSnapshot(ds: KsDataset, configured: Fridge[], now: n
     }
   }
 
+  const productDays = buildProductDays(ds, fridges, products, startDay, D, now);
+
   return {
     now,
     fridges,
@@ -145,5 +149,150 @@ export function buildKitShopSnapshot(ds: KsDataset, configured: Fridge[], now: n
     source: "kitshop",
     historyFromDay,
     categorizedBy,
+    productDays,
   };
+}
+
+/** A write-off is CONFIRMED only when the note of the unload says so; any other unload is just "снято". */
+export const WRITE_OFF_NOTE = /списан|спис\.|брак|просроч|истек|истёк|испорч|утилиз|срок годн/i;
+export const WRITE_OFF_RULE = "снятие, в комментарии которого написано «списание», «брак», «просрочка», «истёк срок», «испорчено» или «утилизация»";
+
+const pdCache = new WeakMap<KsDataset, { key: string; value: ProductDays }>();
+
+/**
+ * Availability and loads / unloads per fridge × dish × history day. Depends only on the data (not on the minute),
+ * so it is rebuilt when the sync changed something.
+ */
+function buildProductDays(ds: KsDataset, fridges: Fridge[], products: Product[], startDay: number, D: number, now: number): ProductDays {
+  const key = `${ds.version}:${dayNumber(now)}:${fridges.map((f) => f.externalId).join(",")}:${products.length}`;
+  const hit = pdCache.get(ds);
+  if (hit?.key === key) return hit.value;
+  const F = fridges.length;
+  const P = products.length;
+  const fIdx = new Map(fridges.map((f, i) => [f.externalId, i]));
+  const pIdx = new Map(products.map((p, i) => [p.externalId, i]));
+  const at = (f: number, p: number, d: number) => (f * P + p) * D + d;
+  const avail = new Float32Array(F * P * D).fill(NaN);
+  const eod = new Float32Array(F * P * D).fill(NaN);
+  const ranOut = new Uint8Array(F * P * D);
+  const loaded = new Float32Array(F * P * D);
+  const removed = new Float32Array(F * P * D);
+  const writtenOff = new Float32Array(F * P * D);
+  const firstDay = new Int32Array(F * P).fill(-1);
+  const seen = (f: number, p: number, day: number) => {
+    const i = f * P + p;
+    if (firstDay[i] < 0 || day < firstDay[i]) firstDay[i] = day;
+  };
+
+  // complete only where every receipt / fill-up has its lines (the newest ones get lines within a tick or two)
+  const settle = now - 30 * 60_000;
+  let salesFrom = ds.state.backfillFrom ?? now;
+  for (const s of ds.sales.values()) if (!s.detailed && s.soldAt < settle && s.soldAt > salesFrom) salesFrom = s.soldAt;
+  const fb = ds.state.fillupsBackfillFrom ?? null;
+  let fillFrom = fb ?? now;
+  for (const f of ds.fillUps.values()) if (!f.detailed && f.at !== null && f.at < settle && f.at > fillFrom) fillFrom = f.at;
+  const validFrom = Math.max(salesFrom, fillFrom);
+
+  const perShop = new Map<string, { sales: TimelineInput["sales"]; fills: TimelineInput["fills"] }>();
+  const shopOf = (id: string) => {
+    let x = perShop.get(id);
+    if (!x) perShop.set(id, (x = { sales: [], fills: [] }));
+    return x;
+  };
+  for (const sale of ds.sales.values()) {
+    const f = fIdx.get(sale.shopId);
+    if (f === undefined || !sale.detailed) continue;
+    const ev = shopOf(sale.shopId);
+    for (const line of ds.positions.get(sale.saleId) ?? []) {
+      ev.sales.push({ at: sale.soldAt, productId: line.productId, qty: line.qty });
+      const p = pIdx.get(line.productId);
+      if (p !== undefined) seen(f, p, dayNumber(sale.soldAt));
+    }
+  }
+  for (const fu of ds.fillUps.values()) {
+    const f = fIdx.get(fu.shopId);
+    if (f === undefined || fu.at === null || !fu.detailed) continue;
+    const ev = shopOf(fu.shopId);
+    const day = dayNumber(fu.at);
+    const writeOff = WRITE_OFF_NOTE.test(fu.notes ?? "");
+    for (const line of ds.fillUpLines.get(fu.fillupId) ?? []) {
+      ev.fills.push({ at: fu.at, productId: line.productId, qty: line.qty });
+      const p = pIdx.get(line.productId);
+      if (p === undefined) continue;
+      if (line.qty > 0) seen(f, p, day);
+      const d = day - startDay;
+      if (d < 0 || d >= D) continue;
+      if (line.qty > 0) loaded[at(f, p, d)] += line.qty;
+      else {
+        removed[at(f, p, d)] -= line.qty;
+        if (writeOff) writtenOff[at(f, p, d)] -= line.qty;
+      }
+    }
+  }
+
+  let fixes = 0;
+  let firstCoverage: number | null = null;
+  const unbalanced: string[] = [];
+  for (const [shopId, f] of fIdx) {
+    const history = ds.stockHistory.get(shopId) ?? new Map();
+    const coverage = ds.stockCoverage.get(shopId) ?? [];
+    if (coverage.length && (firstCoverage === null || coverage[0][0] < firstCoverage)) firstCoverage = coverage[0][0];
+    for (const [pid, list] of history) {
+      const p = pIdx.get(pid);
+      const firstStocked = list.find((x: { qty: number }) => x.qty > 0);
+      if (p !== undefined && firstStocked) seen(f, p, dayNumber(firstStocked.at));
+    }
+    const ev = perShop.get(shopId) ?? { sales: [], fills: [] };
+    // the reconstruction is only as good as the loads: if KiT Shop shows far fewer units loaded than sold and taken out,
+    // loads go another way (not through GetFillUps) — then the past stock would be invented → stock history only
+    let sold = 0;
+    let moved = 0;
+    for (const s of ev.sales) if (s.at >= validFrom) sold += s.qty;
+    for (const x of ev.fills) if (x.at >= validFrom) moved += x.qty;
+    let current = 0;
+    for (const q of (ds.stock.get(shopId) ?? new Map<string, number>()).values()) current += q;
+    // stock at validFrom implied by the movements: start + loaded − taken out − sold = now
+    const impliedStart = current + sold - moved;
+    const balanced = impliedStart <= Math.max(60, 3 * current) && impliedStart >= -20;
+    if (!balanced) unbalanced.push(fridges[f].name);
+    const tl = buildTimeline({
+      sales: ev.sales,
+      fills: ev.fills,
+      history,
+      coverage,
+      current: ds.stock.get(shopId) ?? new Map(),
+      currentAt: ds.stockAt.get(shopId) ?? now,
+      validFrom: balanced ? validFrom : Infinity,
+      startDay,
+      days: D,
+    });
+    fixes += tl.fixes;
+    for (const [pid, dd] of tl.dishes) {
+      const p = pIdx.get(pid);
+      if (p === undefined) continue;
+      avail.set(dd.avail, at(f, p, 0));
+      eod.set(dd.eod, at(f, p, 0));
+      ranOut.set(dd.ranOut, at(f, p, 0));
+    }
+  }
+
+  const today = dayNumber(now);
+  const knownDay = Math.min(unbalanced.length < fIdx.size ? Math.ceil(validFrom / 86_400_000) : Infinity, firstCoverage !== null ? dayNumber(firstCoverage) + 1 : Infinity);
+  const value: ProductDays = {
+    avail,
+    ranOut,
+    eod,
+    loaded,
+    removed,
+    writtenOff,
+    firstDay,
+    fillupsFromDay: fb === null ? null : Math.ceil(fillFrom / 86_400_000),
+    stockKnownFromDay: knownDay < today ? knownDay : null,
+    stockHistoryFromDay: firstCoverage === null ? null : dayNumber(firstCoverage),
+    reconstructionFixes: fixes,
+    unbalanced,
+    writeOffRule: WRITE_OFF_RULE,
+  };
+  pdCache.set(ds, { key, value });
+  return value;
 }

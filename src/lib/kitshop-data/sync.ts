@@ -1,6 +1,6 @@
 import type { KitShopReadOnlyClient } from "@/services/kitshop/kitshopClient";
 import { parseKitshopDate } from "@/services/kitshop/transport";
-import type { KsDataset, KsPosition, KsSale } from "./dataset";
+import type { KsDataset, KsFillUp, KsFillUpLine, KsPosition, KsSale } from "./dataset";
 import type { KsRepo } from "./repo";
 
 /**
@@ -9,14 +9,17 @@ import type { KsRepo } from "./repo";
  *  • stock (GetShopStocks) of our fridges: every tick (≥ 4.5 min apart);
  *  • new receipts (GetSales) since the last sync with a 15-min overlap — never the whole history again;
  *  • backfill of KITSHOP_BACKFILL_DAYS (180) in 1-day GetSales chunks (API limit 60 days), newest first;
- *  • product lines (GetSaleById per receipt — the only documented product-level source), newest first, budgeted.
+ *  • product lines (GetSaleById per receipt — the only documented product-level source), newest first, budgeted;
+ *  • stock HISTORY: every GetShopStocks reading is kept as a change log (a row only when a quantity changed) plus the
+ *    periods it covers — needed to know when a dish was on the shelf and when it was sold out;
+ *  • loads / unloads (GetFillUps, ≤ 60 days per call) of our fridges with their lines (GetFillUpById), same 180-day backfill.
  * Load on KiT Shop is limited: KITSHOP_BACKFILL_CONCURRENCY (1–2) parallel GetSaleById, KITSHOP_BACKFILL_DELAY_MS pause
  * after each history call. A failing receipt is retried later with back-off; it never stops the rest of the sync.
  * Calls only get* methods of the read-only client. Nothing in KiT Shop is ever changed.
  */
 
 type Reader = Pick<KitShopReadOnlyClient, "getShops" | "getProducts" | "getShopStocks" | "getSales" | "getSaleById"> &
-  Partial<Pick<KitShopReadOnlyClient, "getProductGroups">>;
+  Partial<Pick<KitShopReadOnlyClient, "getProductGroups" | "getFillUps" | "getFillUpById">>;
 
 export interface SyncOptions {
   backfillDays: number;
@@ -35,6 +38,13 @@ export interface SyncOptions {
   maxTickMs: number;
   /** consecutive GetSaleById failures that end the detail step of this tick (KiT Shop is probably down) */
   maxConsecutiveFailures: number;
+  /** GetFillUps backfill: days per call and calls per tick */
+  fillupChunkDays: number;
+  fillupChunksPerTick: number;
+  /** GetFillUpById per tick */
+  fillupDetailsPerTick: number;
+  /** two stock readings further apart than this = a gap in the stock history (stock unknown in between) */
+  stockGapMs: number;
 }
 
 const clampInt = (v: string | undefined, def: number, min: number, max: number) => {
@@ -63,6 +73,10 @@ export const DEFAULT_SYNC_OPTIONS: SyncOptions = {
   salesOverlapMs: 15 * 60_000,
   maxTickMs: 4 * 60_000,
   maxConsecutiveFailures: 5,
+  fillupChunkDays: 10,
+  fillupChunksPerTick: 2,
+  fillupDetailsPerTick: 60,
+  stockGapMs: 15 * 60_000,
 };
 
 export interface SyncDeps {
@@ -93,6 +107,16 @@ const errText = (e: unknown) => (e instanceof Error ? e.message : String(e)).sli
 /** Back-off for a receipt whose GetSaleById failed: 2, 4, 8 … minutes, at most 1 hour. */
 export const retryDelayMs = (failures: number) => Math.min(60, 2 ** Math.max(1, failures)) * 60_000;
 
+/** Fill-up lines from Details (list or GetFillUpById); DetailId when given, otherwise the position in the list. */
+function fillUpLines(fillupId: string, details: { ProductId: string; Quantity: number; DetailId?: unknown }[] | null | undefined): KsFillUpLine[] {
+  return (details ?? []).map((x, i) => ({
+    fillupId,
+    lineId: x.DetailId !== undefined && x.DetailId !== null ? String(x.DetailId) : `#${i}`,
+    productId: x.ProductId,
+    qty: Number(x.Quantity),
+  }));
+}
+
 export class KitShopSync {
   readonly o: SyncOptions;
   running = false;
@@ -108,8 +132,17 @@ export class KitShopSync {
     const target = this.d.now() - this.o.backfillDays * DAY;
     let undetailed = 0;
     for (const s of this.d.ds.sales.values()) if (!s.detailed) undetailed++;
+    let fillupsUndetailed = 0;
+    for (const f of this.d.ds.fillUps.values()) if (!f.detailed) fillupsUndetailed++;
     const from = this.d.ds.state.backfillFrom;
-    return { undetailed, backfillDaysLeft: from === null ? this.o.backfillDays : Math.max(0, Math.ceil((from - target) / DAY)) };
+    const ff = this.d.ds.state.fillupsBackfillFrom ?? null;
+    return {
+      undetailed: undetailed + fillupsUndetailed,
+      backfillDaysLeft: Math.max(
+        from === null ? this.o.backfillDays : Math.max(0, Math.ceil((from - target) / DAY)),
+        !this.d.reader.getFillUps ? 0 : ff === null ? this.o.backfillDays : Math.max(0, Math.ceil((ff - target) / DAY)),
+      ),
+    };
   }
 
   /** History progress for the admin: days done, current backfill date, receipts / items. */
@@ -161,6 +194,76 @@ export class KitShopSync {
       ds.touch();
     }
     return fresh.length;
+  }
+
+  /** Adds fill-ups of OUR fridges; Details given in the list are kept at once (no GetFillUpById needed). */
+  private async addFillUps(rows: NonNullable<Awaited<ReturnType<NonNullable<Reader["getFillUps"]>>>>): Promise<number> {
+    const { ds, repo } = this.d;
+    const ours = new Set(this.d.ourShopIds);
+    const fresh: KsFillUp[] = [];
+    for (const r of rows) {
+      if (!ours.has(r.ShopId)) continue;
+      const at = r.FillupDateTime ? this.toWall(r.FillupDateTime) : null;
+      const cur = ds.fillUps.get(r.FillupId);
+      const lines = fillUpLines(r.FillupId, r.Details);
+      if (cur && cur.at === at && (cur.detailed || !lines.length)) continue;
+      const f: KsFillUp = {
+        fillupId: r.FillupId,
+        shopId: r.ShopId,
+        at,
+        type: r.FillupType ?? null,
+        notes: r.Notes ?? null,
+        userName: r.UserName ?? null,
+        detailed: cur?.detailed ?? false,
+        detailFailures: cur?.detailFailures ?? 0,
+        retryAt: cur?.retryAt ?? null,
+      };
+      ds.fillUps.set(f.fillupId, f);
+      fresh.push(f);
+      if (!f.detailed && lines.length) {
+        await repo.saveFillUps([f]);
+        ds.fillUpLines.set(f.fillupId, lines);
+        f.detailed = true;
+        await repo.saveFillUpLines(f.fillupId, lines);
+      }
+    }
+    if (fresh.length) {
+      await repo.saveFillUps(fresh);
+      ds.touch();
+    }
+    return fresh.length;
+  }
+
+  /** GetFillUpById for fill-ups without lines, newest first, within the per-tick budget. */
+  private async detailFillUps(t0: number, now: number): Promise<{ detailed: number; failed: number }> {
+    const { reader, repo, ds } = this.d;
+    const getById = reader.getFillUpById?.bind(reader);
+    if (!getById) return { detailed: 0, failed: 0 };
+    let detailed = 0;
+    let failed = 0;
+    let consecutive = 0;
+    for (const f of ds.undetailedFillUps(this.o.fillupDetailsPerTick, now)) {
+      if (Date.now() - t0 > this.o.maxTickMs || consecutive >= this.o.maxConsecutiveFailures) break;
+      try {
+        const d = await getById(f.fillupId);
+        const lines = fillUpLines(f.fillupId, d?.Details);
+        ds.fillUpLines.set(f.fillupId, lines);
+        if (d?.Notes && !f.notes) f.notes = d.Notes;
+        f.detailed = true;
+        f.retryAt = null;
+        await repo.saveFillUpLines(f.fillupId, lines);
+        detailed++;
+        consecutive = 0;
+      } catch {
+        failed++;
+        consecutive++;
+        f.detailFailures = (f.detailFailures ?? 0) + 1;
+        f.retryAt = now + retryDelayMs(f.detailFailures);
+        await repo.markFillUpFailed(f.fillupId, f.detailFailures, f.retryAt).catch(() => undefined);
+      }
+      await this.sleep(this.o.delayMs);
+    }
+    return { detailed, failed };
   }
 
   /** GetSaleById for a batch of receipts with limited concurrency; failures are recorded per receipt. */
@@ -265,9 +368,12 @@ export class KitShopSync {
             const rows = await reader.getShopStocks(shopId);
             const m = new Map<string, number>();
             for (const r of rows) if (r.Quantity > 0) m.set(r.ProductId, (m.get(r.ProductId) ?? 0) + r.Quantity);
+            // stock history (change log) before the current stock is replaced
+            const rec = ds.recordStock(shopId, m, now, this.o.stockGapMs);
             ds.stock.set(shopId, m);
             ds.stockAt.set(shopId, now);
             await repo.replaceStock(shopId, [...m.entries()].map(([productId, qty]) => ({ shopId, productId, qty })), now);
+            await repo.saveStockChanges(shopId, rec.changes, now, rec.coverage);
             return m.size;
           });
           all &&= ok;
@@ -287,6 +393,21 @@ export class KitShopSync {
         ds.state.lastSalesSyncAt = now;
         if (ds.state.backfillFrom === null) ds.state.backfillFrom = from;
       }
+      // 3b. new loads / unloads of our fridges (same overlap idea)
+      const getFillUps = reader.getFillUps?.bind(reader);
+      if (getFillUps) {
+        const ffrom = ds.state.lastFillupsSyncAt !== null ? ds.state.lastFillupsSyncAt - this.o.salesOverlapMs : now - DAY;
+        const okFill = await step("GetFillUps (новые)", async () => {
+          let n = 0;
+          for (let a = ffrom; a < now; a += 30 * DAY) n += await this.addFillUps(await getFillUps({ from: a, to: Math.min(now, a + 30 * DAY) }));
+          return n;
+        });
+        if (okFill) {
+          ds.state.lastFillupsSyncAt = now;
+          if ((ds.state.fillupsBackfillFrom ?? null) === null) ds.state.fillupsBackfillFrom = ffrom;
+        }
+      }
+
       // fresh stock / receipts are on screen right away — the long history steps below must not delay it
       if (steps.some((s) => s.ok && (s.step.startsWith("GetShopStocks") || s.step === "GetSales (новые)"))) {
         ds.state.lastSuccessAt = now;
@@ -303,6 +424,23 @@ export class KitShopSync {
         if (!ok) break;
         ds.state.backfillFrom = a;
         await this.sleep(this.o.delayMs);
+      }
+
+      // 4b. loads / unloads history, newest first, then their lines
+      if (getFillUps) {
+        for (let i = 0; i < this.o.fillupChunksPerTick && (ds.state.fillupsBackfillFrom ?? null) !== null && ds.state.fillupsBackfillFrom! > target; i++) {
+          const to = ds.state.fillupsBackfillFrom!;
+          const a = Math.max(target, to - this.o.fillupChunkDays * DAY);
+          const ok = await step("GetFillUps (история)", async () => this.addFillUps(await getFillUps({ from: a, to })));
+          if (!ok) break;
+          ds.state.fillupsBackfillFrom = a;
+          await this.sleep(this.o.delayMs);
+        }
+        const fr = await this.detailFillUps(t0, now);
+        if (fr.detailed || fr.failed) {
+          ds.touch();
+          steps.push({ step: "GetFillUpById", ok: fr.failed < this.o.maxConsecutiveFailures, count: fr.detailed, error: fr.failed ? `${fr.failed} операций отложено для повтора` : undefined });
+        }
       }
 
       // 5. product lines, newest receipts first, within the budget; failed receipts wait for their retry time

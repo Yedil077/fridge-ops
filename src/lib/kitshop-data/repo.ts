@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Pool } from "pg";
-import { KsDataset, emptySyncState, type KsGroup, type KsPosition, type KsProduct, type KsSale, type KsShop, type KsStock, type KsSyncState } from "./dataset";
+import { KsDataset, emptySyncState, type KsFillUp, type KsFillUpLine, type KsGroup, type KsPosition, type KsProduct, type KsSale, type KsShop, type KsStock, type KsSyncState } from "./dataset";
 
 /**
  * Persistence of the KiT Shop read-only copy.
@@ -22,6 +22,13 @@ export interface KsRepo {
   /** GetSaleById failed for this receipt: remember the attempt, retry after retryAt */
   markDetailFailed(saleId: string, failures: number, retryAt: number): Promise<void>;
   saveState(state: KsSyncState): Promise<void>;
+  /** fill-up headers (GetFillUps); `detailed` of a stored fill-up is never reset */
+  saveFillUps(rows: KsFillUp[]): Promise<void>;
+  /** lines of one fill-up (GetFillUpById) → it becomes detailed */
+  saveFillUpLines(fillupId: string, lines: KsFillUpLine[]): Promise<void>;
+  markFillUpFailed(fillupId: string, failures: number, retryAt: number): Promise<void>;
+  /** stock history: changed quantities at `at` + the 5-minute coverage period they belong to */
+  saveStockChanges(shopId: string, changes: { productId: string; qty: number }[], at: number, coverage: [number, number]): Promise<void>;
 }
 
 export class MemoryKsRepo implements KsRepo {
@@ -35,6 +42,10 @@ export class MemoryKsRepo implements KsRepo {
   async savePositions() {}
   async markDetailFailed() {}
   async saveState() {}
+  async saveFillUps() {}
+  async saveFillUpLines() {}
+  async markFillUpFailed() {}
+  async saveStockChanges() {}
 }
 
 // ───────────────────────── PostgreSQL ─────────────────────────
@@ -62,6 +73,21 @@ CREATE TABLE IF NOT EXISTS ks_stock (
   shop_id BIGINT NOT NULL, product_id BIGINT NOT NULL, qty NUMERIC NOT NULL, synced_at BIGINT NOT NULL,
   PRIMARY KEY (shop_id, product_id)
 );
+CREATE TABLE IF NOT EXISTS ks_fillups (
+  fillup_id BIGINT PRIMARY KEY, shop_id BIGINT NOT NULL, at BIGINT, type INTEGER, notes TEXT, user_name TEXT,
+  detailed BOOLEAN NOT NULL DEFAULT false, detail_failures INTEGER NOT NULL DEFAULT 0, retry_at BIGINT
+);
+CREATE TABLE IF NOT EXISTS ks_fillup_lines (
+  fillup_id BIGINT NOT NULL, line_id TEXT NOT NULL, product_id BIGINT NOT NULL, qty NUMERIC NOT NULL, PRIMARY KEY (fillup_id, line_id)
+);
+CREATE TABLE IF NOT EXISTS ks_stock_history (
+  shop_id BIGINT NOT NULL, product_id BIGINT NOT NULL, captured_at BIGINT NOT NULL, quantity NUMERIC NOT NULL,
+  PRIMARY KEY (shop_id, product_id, captured_at)
+);
+CREATE INDEX IF NOT EXISTS ks_stock_history_at ON ks_stock_history (captured_at);
+CREATE TABLE IF NOT EXISTS ks_stock_coverage (
+  shop_id BIGINT NOT NULL, from_at BIGINT NOT NULL, to_at BIGINT NOT NULL, PRIMARY KEY (shop_id, from_at)
+);
 CREATE TABLE IF NOT EXISTS ks_sync_state (key TEXT PRIMARY KEY, value JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT now());
 `;
 
@@ -77,7 +103,9 @@ export class PgKsRepo implements KsRepo {
 
   async load(ds: KsDataset) {
     await this.ready;
-    const [shops, products, sales, positions, stock, state, groups] = await Promise.all([
+    // stock history older than 200 days is not used by any analysis
+    await this.pool.query("DELETE FROM ks_stock_history WHERE captured_at < (SELECT max(captured_at) FROM ks_stock_history) - 200::bigint * 86400000");
+    const [shops, products, sales, positions, stock, state, groups, fillUps, fillUpLines, stockHistory, coverage] = await Promise.all([
       this.pool.query("SELECT shop_id, name, stocks_accounting FROM ks_shops"),
       this.pool.query("SELECT product_id, name, barcode, vendor_code, price, group_id FROM ks_products"),
       this.pool.query("SELECT sale_id, shop_id, sold_at, total, detailed, detail_failures, retry_at FROM ks_sales"),
@@ -85,7 +113,44 @@ export class PgKsRepo implements KsRepo {
       this.pool.query("SELECT shop_id, product_id, qty, synced_at FROM ks_stock"),
       this.pool.query("SELECT value FROM ks_sync_state WHERE key = 'sync'"),
       this.pool.query("SELECT group_id, name FROM ks_groups"),
+      this.pool.query("SELECT fillup_id, shop_id, at, type, notes, user_name, detailed, detail_failures, retry_at FROM ks_fillups"),
+      this.pool.query("SELECT fillup_id, line_id, product_id, qty FROM ks_fillup_lines"),
+      this.pool.query("SELECT shop_id, product_id, captured_at, quantity FROM ks_stock_history ORDER BY captured_at"),
+      this.pool.query("SELECT shop_id, from_at, to_at FROM ks_stock_coverage ORDER BY from_at"),
     ]);
+    for (const r of fillUps.rows)
+      ds.fillUps.set(String(r.fillup_id), {
+        fillupId: String(r.fillup_id),
+        shopId: String(r.shop_id),
+        at: num(r.at),
+        type: num(r.type),
+        notes: r.notes,
+        userName: r.user_name,
+        detailed: r.detailed,
+        detailFailures: Number(r.detail_failures ?? 0),
+        retryAt: num(r.retry_at),
+      });
+    for (const r of fillUpLines.rows) {
+      const id = String(r.fillup_id);
+      const list = ds.fillUpLines.get(id) ?? [];
+      list.push({ fillupId: id, lineId: String(r.line_id), productId: String(r.product_id), qty: Number(r.qty) });
+      ds.fillUpLines.set(id, list);
+    }
+    for (const r of stockHistory.rows) {
+      const shop = String(r.shop_id);
+      const m = ds.stockHistory.get(shop) ?? new Map<string, { at: number; qty: number }[]>();
+      const pid = String(r.product_id);
+      const list = m.get(pid) ?? [];
+      list.push({ at: Number(r.captured_at), qty: Number(r.quantity) });
+      m.set(pid, list);
+      ds.stockHistory.set(shop, m);
+    }
+    for (const r of coverage.rows) {
+      const shop = String(r.shop_id);
+      const list = ds.stockCoverage.get(shop) ?? [];
+      list.push([Number(r.from_at), Number(r.to_at)]);
+      ds.stockCoverage.set(shop, list);
+    }
     for (const r of groups.rows) ds.groups.set(Number(r.group_id), { groupId: Number(r.group_id), name: r.name });
     for (const r of shops.rows) ds.shops.set(String(r.shop_id), { shopId: String(r.shop_id), name: r.name, stocksAccounting: r.stocks_accounting });
     for (const r of products.rows)
@@ -188,6 +253,32 @@ export class PgKsRepo implements KsRepo {
     await this.pool.query("UPDATE ks_sales SET detail_failures = $2, retry_at = $3 WHERE sale_id = $1", [saleId, failures, retryAt]);
   }
 
+  async saveFillUps(rows: KsFillUp[]) {
+    await this.upsert("ks_fillups", ["fillup_id", "shop_id", "at", "type", "notes", "user_name", "detailed"],
+      rows.map((f) => [f.fillupId, f.shopId, f.at, f.type, f.notes, f.userName, f.detailed]), "fillup_id",
+      "UPDATE SET shop_id = EXCLUDED.shop_id, at = EXCLUDED.at, type = EXCLUDED.type, notes = EXCLUDED.notes, user_name = EXCLUDED.user_name, detailed = ks_fillups.detailed OR EXCLUDED.detailed");
+  }
+
+  async saveFillUpLines(fillupId: string, lines: KsFillUpLine[]) {
+    if (lines.length)
+      await this.upsert("ks_fillup_lines", ["fillup_id", "line_id", "product_id", "qty"], lines.map((l) => [l.fillupId, l.lineId, l.productId, l.qty]), "fillup_id, line_id",
+        "UPDATE SET product_id = EXCLUDED.product_id, qty = EXCLUDED.qty");
+    await this.ready;
+    await this.pool.query("UPDATE ks_fillups SET detailed = true, retry_at = NULL WHERE fillup_id = $1", [fillupId]);
+  }
+
+  async markFillUpFailed(fillupId: string, failures: number, retryAt: number) {
+    await this.ready;
+    await this.pool.query("UPDATE ks_fillups SET detail_failures = $2, retry_at = $3 WHERE fillup_id = $1", [fillupId, failures, retryAt]);
+  }
+
+  async saveStockChanges(shopId: string, changes: { productId: string; qty: number }[], at: number, coverage: [number, number]) {
+    if (changes.length)
+      await this.upsert("ks_stock_history", ["shop_id", "product_id", "captured_at", "quantity"], changes.map((c) => [shopId, c.productId, at, c.qty]),
+        "shop_id, product_id, captured_at", "UPDATE SET quantity = EXCLUDED.quantity");
+    await this.upsert("ks_stock_coverage", ["shop_id", "from_at", "to_at"], [[shopId, coverage[0], coverage[1]]], "shop_id, from_at", "UPDATE SET to_at = EXCLUDED.to_at");
+  }
+
   async saveState(state: KsSyncState) {
     await this.ready;
     await this.pool.query(
@@ -224,6 +315,14 @@ export class FileKsRepo implements KsRepo {
         ds.stock.set(r.shopId, m);
       }
       for (const [k, v] of Object.entries(raw.stockAt ?? {})) ds.stockAt.set(k, Number(v));
+      for (const f of raw.fillUps ?? []) ds.fillUps.set(f.fillupId, f);
+      for (const l of raw.fillUpLines ?? []) ds.fillUpLines.set(l.fillupId, [...(ds.fillUpLines.get(l.fillupId) ?? []), l]);
+      for (const r of raw.stockHistory ?? []) {
+        const m = ds.stockHistory.get(r.shopId) ?? new Map<string, { at: number; qty: number }[]>();
+        m.set(r.productId, [...(m.get(r.productId) ?? []), { at: r.at, qty: r.qty }]);
+        ds.stockHistory.set(r.shopId, m);
+      }
+      for (const [k, v] of Object.entries(raw.stockCoverage ?? {})) ds.stockCoverage.set(k, v as [number, number][]);
       ds.state = { ...emptySyncState(), ...(raw.state ?? {}) };
       ds.touch();
     } catch {
@@ -245,6 +344,11 @@ export class FileKsRepo implements KsRepo {
         positions: [...ds.positions.values()].flat(),
         stock: [...ds.stock.entries()].flatMap(([shopId, m]) => [...m.entries()].map(([productId, qty]) => ({ shopId, productId, qty }))),
         stockAt: Object.fromEntries(ds.stockAt),
+        fillUps: [...ds.fillUps.values()],
+        fillUpLines: [...ds.fillUpLines.values()].flat(),
+        stockHistory: [...ds.stockHistory.entries()].flatMap(([shopId, m]) =>
+          [...m.entries()].flatMap(([productId, list]) => list.map((x) => ({ shopId, productId, at: x.at, qty: x.qty })))),
+        stockCoverage: Object.fromEntries(ds.stockCoverage),
         state: ds.state,
       };
       fs.writeFileSync(`${this.file}.tmp`, JSON.stringify(data));
@@ -274,6 +378,18 @@ export class FileKsRepo implements KsRepo {
     this.schedule();
   }
   async saveState() {
+    this.schedule();
+  }
+  async saveFillUps() {
+    this.schedule();
+  }
+  async saveFillUpLines() {
+    this.schedule();
+  }
+  async markFillUpFailed() {
+    this.schedule();
+  }
+  async saveStockChanges() {
     this.schedule();
   }
 }

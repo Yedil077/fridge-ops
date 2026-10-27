@@ -2,27 +2,29 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Simulator } from "../src/lib/simulator/simulator";
 import { analyze, type AnalysisResult } from "../src/lib/engine/analysis";
-import { buildProfiles } from "../src/lib/engine/fridgeProfile";
 import { demandGrid } from "../src/lib/engine/demand";
 import { KsDataset } from "../src/lib/kitshop-data/dataset";
 import { buildKitShopSnapshot } from "../src/lib/kitshop-data/snapshot";
 import { configuredFridges } from "../src/lib/simulator/model";
+import { productAnalyticsView } from "../src/lib/server/productAnalyticsView";
 import { dayNumber } from "../src/lib/time";
 import type { NetworkSnapshot } from "../src/lib/domain/types";
 
 /**
- * ONE SOURCE OF TRUTH: the fridge profile and the transfer recommendations read the same demand cells.
- *  • profile need == need of the task's target, profile can-give == surplus of the task's source;
- *  • no need (profile "норма") → no task for that target;
- *  • the same horizon gives the same numbers everywhere.
+ * ONE SOURCE OF TRUTH: the product analytics (norm per dish per fridge) → engine/demand.ts → transfer recommendations.
+ *  • a category need / surplus in a task == the sum of the dish cells == what the analytics screen shows;
+ *  • every dish in a task: qty ≤ need of THAT dish at the target and ≤ surplus of THAT dish at the source;
+ *  • no need → no task, no surplus → no source; the same horizon gives the same numbers everywhere.
  */
 
 const learning = () => ({ forecastBias: {}, pairStats: {} });
 
-function checkConsistency(snap: NetworkSnapshot, a: AnalysisResult) {
-  const profiles = buildProfiles(a.ctx, a.forecasts, a.demandIndex, { demand: a.demand });
+function checkConsistency(snap: NetworkSnapshot, a: AnalysisResult, horizon: "NOW" | "UNTIL_EVENING" = "NOW") {
+  const grid = a.demand[horizon];
+  const P = snap.products.length;
   const fIdx = new Map(snap.fridges.map((f, i) => [f.id, i]));
   const cIdx = new Map(snap.categories.map((c, i) => [c.id, i]));
+  const pIdx = new Map(snap.products.map((p, i) => [p.id, i]));
   let lines = 0;
   for (const m of a.drafts) {
     const s = fIdx.get(m.sourceFridgeId)!;
@@ -30,25 +32,35 @@ function checkConsistency(snap: NetworkSnapshot, a: AnalysisResult) {
       lines++;
       const t = fIdx.get(line.targetFridgeId)!;
       const c = cIdx.get(line.categoryId)!;
-      const tgtCell = a.demand.NOW[t][c];
-      const srcCell = a.demand.NOW[s][c];
-      // the task's numbers ARE the demand module's numbers
+      const tgtCell = grid.cells[t][c];
+      const srcCell = grid.cells[s][c];
       assert.equal(line.expectedShortage, tgtCell.need, "task target need == demand need");
       assert.equal(line.expectedSurplus, srcCell.surplus, "task source surplus == demand surplus");
-      // …and the profile shows the same
-      assert.equal(profiles[t].categories[c].need, line.expectedShortage, "profile need == task need");
-      assert.equal(profiles[s].categories[c].canGive, line.expectedSurplus, "profile can-give == task surplus");
-      // no need → no task; no surplus → no source
-      assert.ok(tgtCell.need > 0, "a task exists only where the target needs");
-      assert.ok(srcCell.surplus > 0, "a source must have a safe surplus");
-      assert.notEqual(profiles[t].categories[c].status, "OK", "a NORMAL category never gets a task");
-      assert.ok(line.recommendedQty <= tgtCell.need && line.recommendedQty <= srcCell.surplus, "never more than needed / safely available");
+      const dishes = (f: number) => snap.products.map((p, i) => (p.categoryId === line.categoryId ? grid.products[f * P + i] : undefined)).filter((x) => !!x);
+      assert.equal(tgtCell.need, dishes(t).reduce((acc, x) => acc + x!.need, 0), "a category need is the sum of its dishes");
+      assert.equal(srcCell.surplus, dishes(s).reduce((acc, x) => acc + x!.surplus, 0), "a category surplus is the sum of its dishes");
+      assert.ok(tgtCell.need > 0 && srcCell.surplus > 0, "no need → no task, no surplus → no source");
+      for (const pr of line.products) {
+        const p = pIdx.get(pr.productId)!;
+        const tc = grid.products[t * P + p]!;
+        const sc = grid.products[s * P + p]!;
+        assert.ok(pr.qty <= tc.need, `${pr.name}: ${pr.qty} ≤ need ${tc.need} of THAT dish`);
+        assert.ok(pr.qty <= sc.surplus, `${pr.name}: ${pr.qty} ≤ surplus ${sc.surplus} of THAT dish`);
+      }
+      // the analytics screen shows the same cells
+      if (horizon === "NOW") {
+        const v = productAnalyticsView(snap, a, snap.fridges[t].id, "20:00");
+        for (const pr of line.products) {
+          const row = v.products.find((r) => r.productId === pr.productId)!;
+          assert.equal(row.today!.need, grid.products[t * P + pIdx.get(pr.productId)!]!.need, "analytics «добавить» == task need");
+        }
+      }
     }
   }
   return lines;
 }
 
-test("simulator, several moments of the day: profile and tasks agree on every number", () => {
+test("simulator, several moments of the day: analytics and tasks agree on every number", () => {
   const sim = Simulator.create(42, dayNumber(Date.UTC(2026, 8, 29)));
   let lines = 0;
   for (const step of [240, 120, 120, 120, 120]) {
@@ -67,7 +79,8 @@ test("ДО ВЕЧЕРА horizon: the evening task list uses the UNTIL_EVENING ce
   const fIdx = new Map(snap.fridges.map((f, i) => [f.id, i]));
   const cIdx = new Map(snap.categories.map((c, i) => [c.id, i]));
   for (const m of a.drafts)
-    for (const line of m.lines) assert.equal(line.expectedShortage, a.demand.UNTIL_EVENING[fIdx.get(line.targetFridgeId)!][cIdx.get(line.categoryId)!].need);
+    for (const line of m.lines) assert.equal(line.expectedShortage, a.demand.UNTIL_EVENING.cells[fIdx.get(line.targetFridgeId)!][cIdx.get(line.categoryId)!].need);
+  checkConsistency(snap, a, "UNTIL_EVENING");
 });
 
 test("same horizon → the same numbers on every call (no screen computes its own)", () => {
@@ -130,28 +143,24 @@ function satti() {
   return configuredFridges(dayNumber(NOW)).filter((f) => SATTI.includes(f.externalId));
 }
 
-test("KiT Shop snapshot (production path): profile and tasks agree", () => {
+test("KiT Shop snapshot (production path): analytics and tasks agree", () => {
   const snap = buildKitShopSnapshot(kitshopDataset(), satti(), NOW);
   assert.equal(snap.source, "kitshop");
   const a = analyze(snap, learning(), []);
   assert.ok(checkConsistency(snap, a) > 0, "the KiT Shop scenario produced a task (SATTI 1 → SATTI 2 hot food)");
-  const profiles = buildProfiles(a.ctx, a.forecasts, a.demandIndex, { demand: a.demand });
   const s2 = snap.fridges.findIndex((f) => f.externalId === "621826");
-  const hot = snap.categories.findIndex((c) => c.id === "hot");
-  assert.ok(profiles[s2].categories[hot].need > 0, "SATTI 2 with 1 hot dish at lunch needs hot food");
+  const pasta = snap.products.findIndex((p) => p.name.startsWith("Паста"));
+  assert.ok(a.demand.NOW.products[s2 * snap.products.length + pasta]!.need > 0, "SATTI 2 with 1 pasta at lunch needs pasta");
+  const plov = snap.products.findIndex((p) => p.name.includes("плов"));
+  assert.equal(a.demand.NOW.products[s2 * snap.products.length + plov], undefined, "a dish SATTI 2 never sells gets no need there");
 });
 
-test("incomplete history (receipts still without lines) → those days are left out and confidence is lower", () => {
+test("incomplete history (receipts still without lines) → those days are left out and confidence is low", () => {
   const full = buildKitShopSnapshot(kitshopDataset(), satti(), NOW);
   const partial = buildKitShopSnapshot(kitshopDataset({ undetailedDaysAgo: 5 }), satti(), NOW);
   assert.ok((partial.historyFromDay ?? 0) > (full.historyFromDay ?? 0), "complete history starts after the incomplete day");
   assert.equal(partial.historyFromDay, dayNumber(NOW) - 4);
-  const conf = (snap: NetworkSnapshot) => {
-    const a = analyze(snap, learning(), []);
-    return buildProfiles(a.ctx, a.forecasts, a.demandIndex, { demand: a.demand }).map((p) => p.confidence);
-  };
-  const cf = conf(full);
-  const cp = conf(partial);
-  cp.forEach((v, i) => assert.ok(v < cf[i], `confidence drops while history is incomplete (${v} < ${cf[i]})`));
-  assert.ok(cp.every((v) => v <= 0.5), "a few days of complete history never look like a confident profile");
+  const conf = (snap: NetworkSnapshot) => analyze(snap, learning(), []).products.byFridge.flat();
+  assert.ok(conf(full).some((x) => x.confidence !== "LOW"), "60 days of history: not everything is low");
+  assert.ok(conf(partial).every((x) => x.confidence === "LOW" && x.status === "NO_DATA"), "4 days of complete history never look like a norm");
 });

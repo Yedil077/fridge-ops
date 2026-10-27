@@ -4,7 +4,8 @@ import { forecastFridge } from "./forecast";
 import { buildContext, type EngineContext } from "./history";
 import { demandIndex, personality } from "./profile";
 import { DEFAULT_UNTIL_MINUTE, recommend, type MissionDraft, type Reservation } from "./recommend";
-import { demandGrid, type DemandCell, type Horizon } from "./demand";
+import { demandGrid, type DemandGrid, type Horizon } from "./demand";
+import { productStats, type ProductStats } from "./productNorm";
 
 /**
  * Hourly analysis pipeline:
@@ -16,8 +17,10 @@ export interface AnalysisResult {
   forecasts: FridgeForecast[];
   demandIndex: DemandIndexRow[];
   drafts: MissionDraft[];
-  /** the ONE demand source (engine/demand.ts) for both horizons — the profile and the recommendations read it */
-  demand: Record<Horizon, DemandCell[][]>;
+  /** the ONE demand source (engine/demand.ts) for both horizons — the analytics screen and the recommendations read it */
+  demand: Record<Horizon, DemandGrid>;
+  /** product × fridge analytics (norm per day, availability, loads / unloads) — the base of `demand` */
+  products: ProductStats;
   untilMinute: number;
 }
 
@@ -68,7 +71,7 @@ export function analyze(
     NOW: demandGrid(ctx, forecasts, { horizon: "NOW", untilMinute: until, promised }),
     UNTIL_EVENING: demandGrid(ctx, forecasts, { horizon: "UNTIL_EVENING", untilMinute: until, promised }),
   };
-  return { ctx, forecasts, demandIndex: di, drafts, demand, untilMinute: until };
+  return { ctx, forecasts, demandIndex: di, drafts, demand, products: productStats(ctx), untilMinute: until };
 }
 
 export function personalities(ctx: EngineContext, di: DemandIndexRow[]): FridgePersonality[] {

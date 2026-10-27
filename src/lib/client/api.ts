@@ -4,8 +4,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Mission } from "@/lib/domain/types";
 import { useForecastMode } from "./forecastMode";
 import type { DashboardView, fridgeDetailView, historyView } from "@/lib/server/views";
-import type { ProfilesView } from "@/lib/server/profilesView";
-export type { ProfilesView };
+import type { ProductAnalyticsView } from "@/lib/server/productAnalyticsView";
+export type { ProductAnalyticsView };
 
 export type FridgeDetailView = NonNullable<ReturnType<typeof fridgeDetailView>>;
 export type HistoryView = ReturnType<typeof historyView>;
@@ -94,9 +94,13 @@ export function useFridge(id: string) {
   return useQuery({ queryKey: ["fridge", id], queryFn: () => api<FridgeDetailView>(`/api/fridges/${id}`), refetchInterval: 30_000 });
 }
 
-/** Профили холодильников: норма каждой точки, сегодня относительно нормы, нужно / можно отдать, сравнение в группе. */
-export function useProfiles() {
-  return useQuery({ queryKey: ["profiles"], queryFn: () => api<ProfilesView>("/api/analytics/profiles"), refetchInterval: 60_000 });
+/** Аналитика блюд холодильника: продажи, снятия, наличие, норма на день, что нужно сегодня. null = первый холодильник. */
+export function useProductAnalytics(fridgeId: string | null) {
+  return useQuery({
+    queryKey: ["product-analytics", fridgeId],
+    queryFn: () => api<ProductAnalyticsView>(`/api/analytics/products${fridgeId ? `?fridge=${encodeURIComponent(fridgeId)}` : ""}`),
+    refetchInterval: 60_000,
+  });
 }
 
 export function useHistory(range: number, fridge: string | null) {

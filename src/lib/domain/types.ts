@@ -124,6 +124,38 @@ export interface NetworkSnapshot {
   historyFromDay?: number;
   /** real data only: how many products got their category from the KiT Shop group vs the dish name */
   categorizedBy?: { group: number; name: number };
+  /** real data only: availability, loads / unloads per fridge × dish × history day (same day axis as history) */
+  productDays?: ProductDays;
+}
+
+/** Fridge × dish × day facts that sales alone cannot give. Arrays are F*P*D (index (f * P + p) * D + d). */
+export interface ProductDays {
+  /** share of the fridge's sales made while the dish was on the shelf, 0..1; NaN = stock not known that day */
+  avail: Float32Array;
+  /** times a sale took the last unit */
+  ranOut: Uint8Array;
+  /** stock at the end of the day; NaN = unknown */
+  eod: Float32Array;
+  /** units loaded (fill-ups with quantity > 0) */
+  loaded: Float32Array;
+  /** units taken out (fill-ups with quantity < 0), as a positive number — write-offs AND moves to other fridges */
+  removed: Float32Array;
+  /** of the taken out: confirmed write-off (the fill-up note says so) */
+  writtenOff: Float32Array;
+  /** F*P first day the dish appeared at the fridge (sale, load or stock); −1 = never */
+  firstDay: Int32Array;
+  /** loads / unloads are complete from this day (null = not read) */
+  fillupsFromDay: number | null;
+  /** stock is known (history or reconstruction) from this day (null = not known for any full day) */
+  stockKnownFromDay: number | null;
+  /** first day of the 5-minute stock history (null = not started) */
+  stockHistoryFromDay: number | null;
+  /** reconstruction steps clamped at 0 — movements that KiT Shop does not show */
+  reconstructionFixes: number;
+  /** fridges (names) whose loads in KiT Shop do not add up with their sales → no reconstruction there, stock history only */
+  unbalanced: string[];
+  /** how a write-off is recognised */
+  writeOffRule: string;
 }
 
 // ───────────────────────── Engine outputs ─────────────────────────
