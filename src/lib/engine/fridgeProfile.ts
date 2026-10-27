@@ -5,6 +5,7 @@ import { activityProfile } from "./activity";
 import { sumAcross } from "./forecast";
 import { histDay, type EngineContext } from "./history";
 import type { DemandIndexRow } from "../domain/types";
+import type { DemandCell, Horizon } from "./demand";
 
 /**
  * FRIDGE PROFILE — what is NORMAL for one fridge, learned from its own 180 days, and where today stands.
@@ -34,14 +35,18 @@ export interface CategoryProfile {
   vsNetworkPct: number;
   demand: DemandLevel;
   stock: number;
-  next1h: number;
+  /** expected demand, horizon NOW (~90 min) — engine/demand.ts */
+  expectedNow: number;
+  /** expected demand until the evening time — engine/demand.ts */
   untilEvening: number;
   projectedEvening: number;
   status: StockStatus;
-  /** units to bring now (target side) */
+  /** need_quantity, horizon NOW — the SAME number the transfer recommendation uses */
   need: number;
-  /** safe_transferable = stock − expected until next check − minimum display stock (source side) */
+  /** safe_surplus, horizon NOW — the SAME number the transfer recommendation uses */
   canGive: number;
+  /** plain reason from the demand module */
+  reason: string;
 }
 
 export interface ProductAffinity {
@@ -167,15 +172,14 @@ function productShares(ctx: EngineContext) {
 }
 
 export interface ProfileOptions {
-  /** clock minute of "ДО ВЕЧЕРА" (Настройки), default 20:00 */
-  untilMinute: number;
+  /** the one demand source, both horizons (AnalysisResult.demand) */
+  demand: Record<Horizon, DemandCell[][]>;
 }
 
 export function buildProfiles(ctx: EngineContext, forecasts: FridgeForecast[], di: DemandIndexRow[], opts: ProfileOptions): FridgeProfile[] {
   const { snap } = ctx;
   const nowMin = ctx.nowMinute;
   const shares = productShares(ctx);
-  const K = ENGINE_CONFIG.conservative;
 
   return forecasts.map((ff, f) => {
     // ── data volume & confidence ──
@@ -244,14 +248,9 @@ export function buildProfiles(ctx: EngineContext, forecasts: FridgeForecast[], d
     const categories: CategoryProfile[] = ff.categories.map((cf, c) => {
       const cat = snap.categories[c];
       const index = di[f]?.index[c] ?? 1;
-      const until = opts.untilMinute > nowMin ? sumAcross(cf.forecastHourly, cf.tomorrowHourly, nowMin, opts.untilMinute) : cf.expected1h;
-      const next1h = cf.expected1h;
-      const minDisplay = K.minDisplayStock[cat.id] ?? 2;
-      // safe_transferable = stock − expected demand until the next check (upper estimate) − minimum display stock,
-      // and the source keeps what it will sell until the evening; small moves: at most maxPerCategory at a time
-      const canGive = Math.max(0, Math.min(Math.floor(cf.stock - cf.interval1h[1] - minDisplay), Math.floor(cf.stock - until - minDisplay), K.maxPerCategory));
-      const need = next1h >= ENGINE_CONFIG.conservative.minDemandInWindow ? Math.max(0, Math.ceil(next1h + cf.safetyStock - cf.stock)) : 0;
-      const status: StockStatus = need > 0 ? "LOW" : canGive >= 2 && cf.stock > until + minDisplay ? "SURPLUS" : "OK";
+      const now = opts.demand.NOW[f][c];
+      const eve = opts.demand.UNTIL_EVENING[f][c];
+      const status: StockStatus = now.need > 0 ? "LOW" : now.surplus > 0 ? "SURPLUS" : "OK";
       return {
         id: cat.id,
         name: cat.name,
@@ -260,12 +259,13 @@ export function buildProfiles(ctx: EngineContext, forecasts: FridgeForecast[], d
         vsNetworkPct: Math.round((index - 1) * 100),
         demand: index >= 1.15 ? "HIGH" : index <= 0.85 ? "LOW" : "NORMAL",
         stock: cf.stock,
-        next1h: r1(next1h),
-        untilEvening: r1(until),
-        projectedEvening: Math.round(cf.stock - until),
+        expectedNow: now.expected,
+        untilEvening: eve.expected,
+        projectedEvening: eve.projected,
         status,
-        need,
-        canGive: need > 0 ? 0 : canGive,
+        need: now.need,
+        canGive: now.surplus,
+        reason: now.reason,
       };
     });
 
@@ -312,10 +312,10 @@ export function buildProfiles(ctx: EngineContext, forecasts: FridgeForecast[], d
       summary.push(`Сегодня ${status === "BELOW" ? "ниже" : "выше"} нормы: ${signedPct(deviationPct ?? 0)}${status === "ANOMALY" ? " — аномалия, в норму не записывается" : ""}`);
     else if (status === "NORMAL") summary.push(`Сегодня в норме (${signedPct(deviationPct ?? 0)})`);
     for (const cp of categories) {
-      if (cp.need > 0) summary.push(`Нужно: ${cp.emoji} ${cp.name} +${cp.need} (есть ${cp.stock}, за час обычно ~${Math.round(cp.next1h)})`);
+      if (cp.need > 0) summary.push(`Нужно: ${cp.emoji} ${cp.name} +${cp.need} (${cp.reason})`);
     }
     for (const cp of categories) {
-      if (cp.canGive > 0 && cp.status === "SURPLUS") summary.push(`Может отдать: ${cp.emoji} ${cp.name} ×${cp.canGive} (есть ${cp.stock}, до вечера продастся ~${Math.round(cp.untilEvening)})`);
+      if (cp.canGive > 0) summary.push(`Может отдать: ${cp.emoji} ${cp.name} ×${cp.canGive} (${cp.reason})`);
     }
 
     return {

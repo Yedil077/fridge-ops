@@ -40,14 +40,14 @@ export default function CommandCenter() {
         <div className="mb-3 flex flex-wrap items-center gap-3">
           <h2 className="label">Перемещения</h2>
           <ModeToggle size="sm" className="w-[260px]" />
-          <span className="text-[11px] text-ink-3">{data.lastAnalysisAt ? `пересчитано в ${fmtClock(data.lastAnalysisAt)} · обновляется каждый час` : ""}</span>
+          <span className="text-[11px] text-ink-3">{data.lastAnalysisAt ? `пересчитано в ${fmtClock(data.lastAnalysisAt)} · обновляется каждые 15 минут` : ""}</span>
         </div>
         {data.missions.open.length === 0 ? (
           <div className="card flex items-center gap-4 p-6">
             <span className="grid h-10 w-10 place-items-center rounded-full bg-good/15 text-good-ink">✓</span>
             <div>
               <div className="text-[15px] font-semibold">Сейчас ничего переносить не нужно</div>
-              <div className="text-[13px] text-ink-3">Следующая проверка — через час.</div>
+              <div className="text-[13px] text-ink-3">Следующая проверка — через 15 минут.</div>
             </div>
           </div>
         ) : (

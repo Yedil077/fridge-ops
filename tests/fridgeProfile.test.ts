@@ -13,7 +13,7 @@ function setup(advanceMinutes = 300) {
   sim.advance(advanceMinutes);
   const snap = sim.snapshot();
   const a = analyze(snap, learning(), []);
-  return { snap, a, profiles: buildProfiles(a.ctx, a.forecasts, a.demandIndex, { untilMinute: 20 * 60 }) };
+  return { snap, a, profiles: buildProfiles(a.ctx, a.forecasts, a.demandIndex, { demand: a.demand }) };
 }
 
 test("weighted quantile: recent days weigh more", () => {
@@ -58,17 +58,15 @@ test("category affinity drives tags and demand level", () => {
   }
 });
 
-test("source is never emptied: can give ≤ stock − expected next hour (upper) − display minimum; never gives what it needs", () => {
+test("profile need / can give are exactly the demand module's numbers (NOW)", () => {
   const { profiles, a } = setup();
   for (const p of profiles)
     for (const [c, cp] of p.categories.entries()) {
-      const cf = a.forecasts[p.fridgeIndex].categories[c];
-      const min = ENGINE_CONFIG.conservative.minDisplayStock[cp.id];
-      assert.ok(cp.canGive <= Math.max(0, cf.stock - cf.interval1h[1] - min) + 1e-9);
-      assert.ok(cp.canGive <= Math.max(0, cf.stock - cp.untilEvening - min) + 1, "keeps what it sells until the evening");
-      assert.ok(cp.canGive <= ENGINE_CONFIG.conservative.maxPerCategory, "small moves");
-      if (cp.need > 0) assert.equal(cp.canGive, 0);
-      assert.ok(cp.canGive >= 0 && cp.need >= 0);
+      const cell = a.demand.NOW[p.fridgeIndex][c];
+      assert.equal(cp.need, cell.need);
+      assert.equal(cp.canGive, cell.surplus);
+      assert.ok(!(cp.need > 0 && cp.canGive > 0), "never needs and gives the same category");
+      assert.equal(cp.untilEvening, a.demand.UNTIL_EVENING[p.fridgeIndex][c].expected);
     }
 });
 
@@ -81,7 +79,7 @@ test("a day far above the norm is an ANOMALY and does not move the norm", () => 
   const C = snap.categories.length;
   for (let i = f * C * 96; i < (f + 1) * C * 96; i++) snap.today.quarterSales[i] *= 3;
   const a2 = analyze(snap, learning(), []);
-  const p2 = buildProfiles(a2.ctx, a2.forecasts, a2.demandIndex, { untilMinute: 20 * 60 })[f];
+  const p2 = buildProfiles(a2.ctx, a2.forecasts, a2.demandIndex, { demand: a2.demand })[f];
   assert.equal(p2.today.status, "ANOMALY");
   assert.deepEqual(p2.normalDay, before, "history-based norm unchanged by today");
   assert.ok(p2.summary[0].includes("аномалия"));

@@ -13,7 +13,7 @@ export default function MobileTasksPage() {
     <MobileShell title="Перемещения" now={data.now}>
       <ModeToggle className="mb-3" />
       {data.open.length === 0 ? (
-        <div className="card p-6 text-center text-[15px] text-ink-2">Открытых задач нет. Система проверит холодильники через час.</div>
+        <div className="card p-6 text-center text-[15px] text-ink-2">Открытых задач нет. Система проверяет холодильники каждые 15 минут.</div>
       ) : (
         <div className="space-y-2">
           {data.open.map((r) => (

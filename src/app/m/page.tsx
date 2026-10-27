@@ -65,7 +65,7 @@ export default function MobileHomePage() {
         <div className="card mt-4 p-6 text-center">
           <div className="text-[34px]">✓</div>
           <div className="mt-2 text-[18px] font-semibold">Сейчас ничего переносить не нужно</div>
-          <div className="mt-1 text-[14px] text-ink-3">Система проверит холодильники снова через час.</div>
+          <div className="mt-1 text-[14px] text-ink-3">Система проверяет холодильники каждые 15 минут.</div>
         </div>
       )}
 

@@ -79,7 +79,7 @@ export function FridgeProfileCard({ p, compact }: { p: Profile; compact?: boolea
                   <th className="py-1">Категория</th>
                   <th className="text-right">Спрос к сети</th>
                   <th className="text-right">Есть</th>
-                  <th className="text-right">За час</th>
+                  <th className="text-right" title="ближайшие ~1,5 часа">Сейчас</th>
                   <th className="text-right">До вечера</th>
                   <th>Вывод</th>
                 </tr>
@@ -94,7 +94,7 @@ export function FridgeProfileCard({ p, compact }: { p: Profile; compact?: boolea
                       {c.index.toFixed(2)}×
                     </td>
                     <td className="num text-right">{c.stock}</td>
-                    <td className="num text-right">{c.next1h}</td>
+                    <td className="num text-right">{c.expectedNow}</td>
                     <td className="num text-right">{c.untilEvening}</td>
                     <td className={clsx("whitespace-nowrap", c.status === "LOW" ? "text-crit-ink" : c.status === "SURPLUS" ? "text-good-ink" : "text-ink-3")}>
                       {c.status === "LOW" ? `нужно +${c.need}` : c.status === "SURPLUS" ? `может отдать ${c.canGive}` : "норма"}

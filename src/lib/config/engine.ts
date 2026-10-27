@@ -3,8 +3,9 @@
  * Changing a number here changes behaviour everywhere — no magic constants in the engine.
  */
 export const ENGINE_CONFIG = {
-  /** How often the hourly analysis runs (also "time until next check"). */
-  analysisIntervalMinutes: 60,
+  /** How often the transfer list is recomputed (also "time until next check"). Short, so the task list and the
+   *  profile (both from engine/demand.ts) never drift far apart. */
+  analysisIntervalMinutes: 15,
   /** Horizon for shortage risk. */
   riskHorizonMinutes: 120,
 

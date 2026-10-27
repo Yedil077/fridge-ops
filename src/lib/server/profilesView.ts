@@ -15,7 +15,7 @@ import { inMode } from "./views";
 const WD = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
 
 export function profilesView(snap: NetworkSnapshot, a: AnalysisResult, state: AppState, untilMinute: number) {
-  const profiles = buildProfiles(a.ctx, a.forecasts, a.demandIndex, { untilMinute });
+  const profiles = buildProfiles(a.ctx, a.forecasts, a.demandIndex, { demand: a.demand });
   const nameOf = (f: number) => snap.fridges[f].name;
 
   const rows = profiles.map((p) => {
@@ -79,9 +79,9 @@ export function profilesView(snap: NetworkSnapshot, a: AnalysisResult, state: Ap
               items: l.products.map((p) => `${p.name} ×${p.qty}`),
               qty: l.recommendedQty,
               why: [
-                tc ? `${snap.fridges.find((f) => f.id === l.targetFridgeId)?.name}: есть ${tc.stock}, за час обычно ~${tc.next1h}, спрос ${tc.demand === "HIGH" ? "высокий" : tc.demand === "LOW" ? "низкий" : "обычный"} (${tc.index.toFixed(2)}×)` : null,
+                tc ? `${snap.fridges.find((f) => f.id === l.targetFridgeId)?.name}: нужно ${tc.need} — ${tc.reason}; спрос ${tc.demand === "HIGH" ? "высокий" : tc.demand === "LOW" ? "низкий" : "обычный"} (${tc.index.toFixed(2)}×)` : null,
                 tgt && tgt.today.deviationPct !== null ? `сегодня темп ${tgt.today.deviationPct > 0 ? "+" : ""}${tgt.today.deviationPct}% к норме` : null,
-                sc ? `${snap.fridges.find((f) => f.id === m.sourceFridgeId)?.name}: есть ${sc.stock}, за час ~${sc.next1h}, без ущерба можно отдать ${sc.canGive}` : null,
+                sc ? `${snap.fridges.find((f) => f.id === m.sourceFridgeId)?.name}: можно отдать ${sc.canGive} — ${sc.reason}` : null,
               ].filter((x): x is string => !!x),
             };
           }),

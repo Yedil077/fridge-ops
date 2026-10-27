@@ -3,7 +3,8 @@ import { biasKey, type LearningState } from "./feedback";
 import { forecastFridge } from "./forecast";
 import { buildContext, type EngineContext } from "./history";
 import { demandIndex, personality } from "./profile";
-import { recommend, type MissionDraft, type Reservation } from "./recommend";
+import { DEFAULT_UNTIL_MINUTE, recommend, type MissionDraft, type Reservation } from "./recommend";
+import { demandGrid, type DemandCell, type Horizon } from "./demand";
 
 /**
  * Hourly analysis pipeline:
@@ -15,6 +16,9 @@ export interface AnalysisResult {
   forecasts: FridgeForecast[];
   demandIndex: DemandIndexRow[];
   drafts: MissionDraft[];
+  /** the ONE demand source (engine/demand.ts) for both horizons — the profile and the recommendations read it */
+  demand: Record<Horizon, DemandCell[][]>;
+  untilMinute: number;
 }
 
 /** Accepted / in-progress missions reserve their quantities so a new analysis does not duplicate them. */
@@ -53,12 +57,18 @@ export function analyze(
   const ctx = buildContext(snap, (f, c) => learning.forecastBias[biasKey(snap.fridges[f].id, snap.categories[c].id)] ?? 1);
   const forecasts = snap.fridges.map((_, f) => forecastFridge(ctx, f));
   const di = demandIndex(ctx);
-  const drafts = recommend(ctx, forecasts, reservationsFrom(activeMissions, snap), learning.pairStats, {
+  const promised = reservationsFrom(activeMissions, snap);
+  const until = untilMinute ?? DEFAULT_UNTIL_MINUTE;
+  const drafts = recommend(ctx, forecasts, promised, learning.pairStats, {
     mode,
-    untilMinute,
+    untilMinute: until,
     acceptance: learning.acceptance,
   });
-  return { ctx, forecasts, demandIndex: di, drafts };
+  const demand = {
+    NOW: demandGrid(ctx, forecasts, { horizon: "NOW", untilMinute: until, promised }),
+    UNTIL_EVENING: demandGrid(ctx, forecasts, { horizon: "UNTIL_EVENING", untilMinute: until, promised }),
+  };
+  return { ctx, forecasts, demandIndex: di, drafts, demand, untilMinute: until };
 }
 
 export function personalities(ctx: EngineContext, di: DemandIndexRow[]): FridgePersonality[] {

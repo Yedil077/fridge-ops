@@ -77,6 +77,18 @@ export function buildKitShopSnapshot(ds: KsDataset, configured: Fridge[], now: n
   const revenue = new Float32Array(F);
   const firstDay = new Array<number>(F).fill(Infinity);
 
+  // History is trusted only where EVERY receipt already has its product lines (GetSaleById goes newest first):
+  // a past day with receipts still waiting would look like a weak day and pull the norm down. Those days, and all older
+  // ones, are left out → the profile has less history and therefore a lower confidence until the backfill is done.
+  let newestIncomplete = -Infinity;
+  for (const sale of ds.sales.values()) {
+    if (sale.detailed) continue;
+    const day = dayNumber(sale.soldAt);
+    if (day < today && day > newestIncomplete) newestIncomplete = day;
+  }
+  const backfillDay = ds.state.backfillFrom !== null ? dayNumber(ds.state.backfillFrom) + 1 : today;
+  const historyFromDay = Math.max(startDay, newestIncomplete + 1, backfillDay);
+
   for (const sale of ds.sales.values()) {
     const f = fIdx.get(sale.shopId);
     if (f === undefined) continue;
@@ -97,14 +109,17 @@ export function buildKitShopSnapshot(ds: KsDataset, configured: Fridge[], now: n
         productSales[f * P + p] += line.qty;
         if (sale.total === null) revenue[f] += line.qty * (line.price ?? 0);
       } else {
+        if (day < historyFromDay) continue;
         const d = day - startDay;
         hourly[((f * C + c) * D + d) * 24 + Math.floor(minute / 60)] += line.qty;
         productDaily[(f * P + p) * D + d] += line.qty;
       }
     }
   }
+  // days before the complete history are "unknown", not "closed": the engine must not count them as days without sales
   fridges.forEach((fr, i) => {
-    if (Number.isFinite(firstDay[i])) fr.activeSinceDay = firstDay[i];
+    if (Number.isFinite(firstDay[i])) fr.activeSinceDay = Math.max(firstDay[i], historyFromDay);
+    else fr.activeSinceDay = historyFromDay;
   });
 
   const stock = new Int32Array(F * P);
@@ -128,6 +143,7 @@ export function buildKitShopSnapshot(ds: KsDataset, configured: Fridge[], now: n
     travelMinutes: buildTravelMatrix(fridges),
     version: `ks:${ds.version}:${Math.floor(now / 900_000)}`,
     source: "kitshop",
+    historyFromDay,
     categorizedBy,
   };
 }

@@ -120,6 +120,8 @@ export interface NetworkSnapshot {
   /** Bumped every time underlying data changes (for caching). */
   version: string;
   source: "mock" | "kitshop";
+  /** real data only: first day of COMPLETE history (receipts with product lines); older days are left out */
+  historyFromDay?: number;
   /** real data only: how many products got their category from the KiT Shop group vs the dish name */
   categorizedBy?: { group: number; name: number };
 }
