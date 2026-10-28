@@ -277,6 +277,11 @@ function Checks({ checks }: { checks: Check[] }) {
         {fail ? "❌ Проверка данных не пройдена — нормы этой точки не уверенные" : bad.length ? `⚠️ Проверка данных: ${bad.length} замечаний` : "✅ Проверка данных пройдена"}
         <span className="ml-2 font-normal text-ink-3">{open ? "скрыть" : "подробнее"}</span>
       </button>
+      {checks.some((c) => (c.id === "clock" || c.id === "fresh") && c.level === "FAIL") && (
+        <a href="/admin/kitshop/clock" className="mt-1 block font-semibold underline">
+          Диагностика времени и новых чеков на реальных ответах KiT Shop (для администратора) →
+        </a>
+      )}
       {(open ? checks : bad.filter((c) => c.level === "FAIL")).map((c) => (
         <div key={c.id} className="mt-1 flex gap-2">
           <span>{CHECK_ICON[c.level]}</span>

@@ -79,6 +79,27 @@ export interface KsStockChange {
   qty: number;
 }
 
+/** One "new receipts" GetSales request of the sync, as sent and as answered. */
+export interface NewSalesLog {
+  at: number;
+  /** UpDate / ToDate exactly as sent to KiT Shop */
+  fromSent: string;
+  toSent: string;
+  returned: number;
+  /** raw SaleDateTime strings from the answer */
+  minRaw: string | null;
+  maxRaw: string | null;
+  /** new receipts written to ks_sales */
+  written: number;
+  /** already in ks_sales with the same time and shop → skipped */
+  duplicates: number;
+  /** not written: SaleDateTime could not be read */
+  badDate: number;
+  /** of the written: receipts of shops that are not our fridges (kept, but not shown anywhere) */
+  otherShops: number;
+  error: string | null;
+}
+
 export interface KsSyncError {
   at: number;
   step: string;
@@ -96,6 +117,8 @@ export interface KsSyncState {
    * receipt is minutes old — a gap of hours means KiT Shop gives times in another timezone than ours.
    */
   clockProbe?: { at: number; gapMinutes: number; receiptsLastHour: number; offsetMinutes: number } | null;
+  /** what the last "GetSales (новые)" request sent and what happened to every returned receipt (diagnostics) */
+  lastNewSales?: NewSalesLog | null;
   /** oldest wall-clock ms already listed through GetFillUps (fill-up backfill, like backfillFrom for receipts) */
   fillupsBackfillFrom?: number | null;
   /** oldest wall-clock ms already listed through GetSales (backfill goes back to now − KITSHOP_BACKFILL_DAYS) */

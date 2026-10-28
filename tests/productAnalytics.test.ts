@@ -221,7 +221,7 @@ test("analytics view: today's target is the demand cell the transfers use; data 
   assert.equal(v.fridge.checks.find((c) => c.id === "ids-shop")!.level, "OK");
 });
 
-test("a failed check (receipts from the future = wrong timezone) → data BAD, no confident norm", () => {
+test("a failed check (receipts from the future = wrong timezone) → ДАННЫЕ НЕПОЛНЫЕ, no norm, no transfers", () => {
   const ds = fridgeDataset();
   ds.sales.set("future", { saleId: "future", shopId: SATTI1, soldAt: NOW + 2 * H, total: 1, detailed: true });
   ds.positions.set("future", [{ saleId: "future", positionId: "f", productId: "2", qty: 1, price: 1 }]);
@@ -229,6 +229,10 @@ test("a failed check (receipts from the future = wrong timezone) → data BAD, n
   assert.equal(snap.productDays!.checks[0].find((c) => c.id === "timezone")!.level, "FAIL");
   assert.equal(B.quality, "BAD");
   assert.equal(B.confidence, "LOW");
+  assert.equal(B.norm, null, "no norm at all until the check passes");
+  assert.ok(B.recommendation.startsWith("ДАННЫЕ НЕПОЛНЫЕ"));
+  const v = productAnalyticsView(snap, analyze(snap, { forecastBias: {}, pairStats: {} }, []), null, "20:00");
+  assert.ok(v.products.every((r) => !r.today || (r.today.need === 0 && r.today.surplus === 0)), "no transfers from a fridge whose data failed");
 });
 
 test("clock check: the newest KiT Shop receipt hours old while busy → FAIL with the offset to set", () => {

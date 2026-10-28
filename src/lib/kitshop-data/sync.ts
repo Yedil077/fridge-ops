@@ -1,6 +1,6 @@
 import type { KitShopReadOnlyClient } from "@/services/kitshop/kitshopClient";
-import { parseKitshopDate } from "@/services/kitshop/transport";
-import type { KsDataset, KsFillUp, KsFillUpLine, KsPosition, KsSale } from "./dataset";
+import { kitshopDate, parseKitshopDate } from "@/services/kitshop/transport";
+import type { KsDataset, KsFillUp, KsFillUpLine, KsPosition, KsSale, NewSalesLog } from "./dataset";
 import type { KsRepo } from "./repo";
 
 /**
@@ -197,14 +197,33 @@ export class KitShopSync {
   }
 
   /** Adds receipts; a SaleId already known is never stored twice (overlap / backfill re-reads are free). */
-  private async addSales(rows: Awaited<ReturnType<Reader["getSales"]>>): Promise<number> {
+  private async addSales(rows: Awaited<ReturnType<Reader["getSales"]>>, log?: NewSalesLog): Promise<number> {
     const { ds, repo } = this.d;
     const fresh: KsSale[] = [];
+    const ours = new Set(this.d.ourShopIds);
     for (const r of rows) {
+      if (log) {
+        log.returned++;
+        const t = parseKitshopDate(r.SaleDateTime);
+        if (t !== null) {
+          if (log.minRaw === null || t < parseKitshopDate(log.minRaw)!) log.minRaw = r.SaleDateTime;
+          if (log.maxRaw === null || t > parseKitshopDate(log.maxRaw)!) log.maxRaw = r.SaleDateTime;
+        }
+      }
       const soldAt = this.toWall(r.SaleDateTime);
-      if (soldAt === null) continue;
+      if (soldAt === null) {
+        if (log) log.badDate++;
+        continue;
+      }
       const cur = ds.sales.get(r.SaleId);
-      if (cur && cur.soldAt === soldAt && cur.shopId === r.ShopId) continue;
+      if (cur && cur.soldAt === soldAt && cur.shopId === r.ShopId) {
+        if (log) log.duplicates++;
+        continue;
+      }
+      if (log) {
+        log.written++;
+        if (!ours.has(r.ShopId)) log.otherShops++;
+      }
       const sale: KsSale = {
         saleId: r.SaleId,
         shopId: r.ShopId,
@@ -412,9 +431,17 @@ export class KitShopSync {
 
       // 3. new receipts since the last sync (overlap → nothing is missed, duplicates are ignored)
       const from = ds.state.lastSalesSyncAt !== null ? ds.state.lastSalesSyncAt - this.o.salesOverlapMs : now - DAY;
+      const log: NewSalesLog = { at: now, fromSent: kitshopDate(this.ks({ from, to: now }).from), toSent: kitshopDate(this.ks({ from, to: now }).to), returned: 0, minRaw: null, maxRaw: null, written: 0, duplicates: 0, badDate: 0, otherShops: 0, error: null };
       const okSales = await step("GetSales (новые)", async () => {
         let n = 0;
-        for (let a = from; a < now; a += 30 * DAY) n += await this.addSales(await reader.getSales(this.ks({ from: a, to: Math.min(now, a + 30 * DAY) })));
+        try {
+          for (let a = from; a < now; a += 30 * DAY) n += await this.addSales(await reader.getSales(this.ks({ from: a, to: Math.min(now, a + 30 * DAY) })), log);
+        } catch (e) {
+          log.error = errText(e);
+          throw e;
+        } finally {
+          ds.state.lastNewSales = log;
+        }
         return n;
       });
       if (okSales) {

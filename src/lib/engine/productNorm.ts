@@ -47,7 +47,7 @@ export const STATUS_TEXT: Record<ProductStatus, string> = {
   NO_DATA: "НЕ ХВАТАЕТ ДАННЫХ",
   UNUSED: "НЕ ИСПОЛЬЗУЕТСЯ",
 };
-export const QUALITY_TEXT: Record<DataQuality, string> = { GOOD: "ХОРОШИЕ", INCOMPLETE: "НЕПОЛНЫЕ", BAD: "ПЛОХИЕ" };
+export const QUALITY_TEXT: Record<DataQuality, string> = { GOOD: "ХОРОШИЕ", INCOMPLETE: "НЕПОЛНЫЕ", BAD: "ДАННЫЕ НЕПОЛНЫЕ ❌" };
 export const CONFIDENCE_TEXT: Record<Confidence, string> = { HIGH: "ВЫСОКАЯ", MEDIUM: "СРЕДНЯЯ", LOW: "НИЗКАЯ" };
 
 export interface ProductStat {
@@ -292,6 +292,13 @@ export function productStats(ctx: EngineContext): ProductStats {
         }
       }
       if (!fillupsKnown30 && status !== "UNUSED") why.push("загрузки/снятия за 30 дней ещё не полные");
+      // a failed data check (e.g. KiT Shop time / new receipts): no norm at all until it passes — nothing to trust
+      if (failed.length && status !== "UNUSED") {
+        norm = null;
+        status = "NO_DATA";
+        statusReason = `проверка данных не пройдена: ${failed.map((c) => c.label.toLowerCase()).join(", ")}`;
+        recommendation = "ДАННЫЕ НЕПОЛНЫЕ — нормы нет, пока не пройдена проверка данных";
+      }
 
       // ── data quality
       const incomplete: string[] = [];
