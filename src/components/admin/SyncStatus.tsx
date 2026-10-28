@@ -74,6 +74,19 @@ export function SyncStatus() {
             <Big label="Последняя успешная синхронизация" value={fmtWall(s.lastSuccessAt)} sub={ago(s.now, s.lastSuccessAt).replace(" · ", "")} />
             <Big label="Текущая дата догрузки" value={day(s.progress.currentBackfillDate)} sub={`нагрузка: ${s.progress.limits.concurrency} запрос(а), пауза ${s.progress.limits.delayMs} мс`} />
           </div>
+          {s.memory && s.analytics && (
+            <div className="mt-3 grid grid-cols-2 gap-2 rounded-lg border border-line p-3 text-[13px] md:grid-cols-5">
+              <Big label="Память сервера (RSS)" value={`${s.memory.rssMb} МБ`} sub={`куча JS ${s.memory.heapUsedMb} МБ`} />
+              <Big label="Запуск сервера" value={s.memory.startupMs === null ? "—" : `${(s.memory.startupMs / 1000).toFixed(1)} с`} />
+              <Big label="Строк в памяти" value={n(s.memory.rowsInMemory)} sub={s.memory.historyRowsInDb !== null ? `в базе ${n(s.memory.historyRowsInDb)} (не загружаются)` : undefined} />
+              <Big
+                label="Ночной расчёт"
+                value={s.analytics.running ? "идёт…" : s.analytics.runAt ? fmtWall(s.analytics.runAt) : "ещё не было"}
+                sub={`${s.analytics.nextAt}${s.analytics.ms !== null ? ` · ${(s.analytics.ms / 1000).toFixed(1)} с` : ""}${s.analytics.lastError ? ` · ошибка: ${s.analytics.lastError}` : ""}`}
+              />
+              <Big label="Прочитано расчётом" value={s.analytics.rowsRead ? n(s.analytics.rowsRead.receipts) : "—"} sub={s.analytics.rowsRead ? `чеков · ${n(s.analytics.rowsRead.lines)} позиций · ${n(s.analytics.rowsRead.fillupLines)} загрузок` : undefined} />
+            </div>
+          )}
           <div className="mt-3 grid grid-cols-2 gap-2 text-[13px] md:grid-cols-4">
             <Tile label="Источник на экранах" value={data.shadow ? "SIMULATOR (shadow)" : s.label} tone={s.label === "KITSHOP REAL" && !data.shadow ? "good" : "warn"} />
             <Tile label="Строк остатков (точка × товар)" value={n(s.counts.stockRows)} />
