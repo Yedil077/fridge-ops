@@ -49,6 +49,7 @@ export default function AdminPage() {
       )}
 
       <UntilTimeSetting />
+      <ShelfLifeSetting />
 
       <UsersAdmin />
 
@@ -247,6 +248,65 @@ function UntilTimeSetting() {
           {save.isPending ? "…" : "Сохранить"}
         </button>
       </div>
+    </section>
+  );
+}
+
+const SHELF_CATS: [string, string][] = [
+  ["hot", "🔥 Горячее"],
+  ["salad", "🥗 Салаты"],
+  ["breakfast", "🥐 Завтраки"],
+  ["snack", "🥪 Перекусы"],
+  ["dessert", "🍰 Десерты"],
+  ["drink", "🥤 Напитки"],
+];
+
+/** Срок годности по категориям (часы): за это время поставка должна продаться — на нём строится норма поставки. */
+function ShelfLifeSetting() {
+  const qc = useQueryClient();
+  const { data } = useQuery({
+    queryKey: ["admin", "settings"],
+    queryFn: () => api<{ untilTime: string; shelfLife: { categories: Record<string, number>; products: Record<string, number> } }>("/api/admin/settings"),
+  });
+  const [edit, setEdit] = useState<Record<string, string>>({});
+  const save = useMutation({
+    mutationFn: (categories: Record<string, number>) => api("/api/admin/settings", { method: "PUT", body: JSON.stringify({ shelfLife: { categories } }) }),
+    onSuccess: () => {
+      setEdit({});
+      void qc.invalidateQueries();
+    },
+  });
+  const cats = data?.shelfLife?.categories ?? {};
+  const changed = Object.fromEntries(Object.entries(edit).filter(([, v]) => /^\d+$/.test(v)).map(([k, v]) => [k, Number(v)]));
+  const overrides = Object.keys(data?.shelfLife?.products ?? {}).length;
+  return (
+    <section className="card mt-6 p-4">
+      <div className="label mb-2">Срок годности (часы)</div>
+      <p className="mb-3 text-[13px] text-ink-3">
+        Аналитика считает каждую поставку: сколько поставили → сколько продалось за срок годности → сколько сняли и списали. Для отдельного блюда срок можно изменить в
+        его карточке в Аналитике{overrides ? ` (сейчас изменено у ${overrides} блюд)` : ""}.
+      </p>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+        {SHELF_CATS.map(([id, name]) => (
+          <label key={id} className="flex items-center justify-between gap-2 rounded-lg bg-surface-2 px-3 py-2 text-[13px]">
+            <span>{name}</span>
+            <input
+              inputMode="numeric"
+              value={edit[id] ?? String(cats[id] ?? "")}
+              onChange={(e) => setEdit({ ...edit, [id]: e.target.value.replace(/\D/g, "") })}
+              className="h-9 w-16 rounded-md border border-line bg-surface px-2 text-right"
+            />
+          </label>
+        ))}
+      </div>
+      <button
+        onClick={() => save.mutate(changed)}
+        disabled={save.isPending || !Object.keys(changed).length}
+        className="mt-3 h-10 rounded-lg bg-surface-3 px-4 text-[13px] font-semibold disabled:opacity-40"
+      >
+        {save.isPending ? "…" : "Сохранить"}
+      </button>
+      {save.error && <p className="mt-2 text-[12px] text-crit-ink">{(save.error as Error).message}</p>}
     </section>
   );
 }

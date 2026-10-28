@@ -128,6 +128,22 @@ export interface NetworkSnapshot {
   productDays?: ProductDays;
 }
 
+/** Movements of one dish in one fridge, ascending time. kind: 0 sale, 1 load, 2 unload («снято»), 3 write-off. */
+export interface ProductEvents {
+  at: Float64Array;
+  qty: Float32Array;
+  kind: Uint8Array;
+}
+
+/** One day of a fridge in the continuity check. */
+export interface DayStatus {
+  day: number;
+  receipts: number;
+  /** DATA — receipts are there; CLOSED — the fridge usually does not sell on this weekday; GAP — receipts missing / without lines */
+  status: "DATA" | "CLOSED" | "GAP";
+  note: string;
+}
+
 /** One data check of a fridge, shown before any norm is trusted. */
 export interface DataCheck {
   id: string;
@@ -170,6 +186,12 @@ export interface ProductDays {
   writeOffRule: string;
   /** per fridge index: data checks (sales, ids, duplicates, stock freshness, timezone, completeness) */
   checks: DataCheck[][];
+  /** F*P: every sale / load / unload / write-off of the dish in the fridge since `eventsFrom` (for the delivery batches) */
+  events: (ProductEvents | undefined)[];
+  /** receipts with lines and loads / unloads are complete from this moment (wall-clock ms) */
+  eventsFrom: number;
+  /** per fridge index: the last 30 days (oldest first) — data / closed / GAP */
+  continuity: DayStatus[][];
 }
 
 // ───────────────────────── Engine outputs ─────────────────────────

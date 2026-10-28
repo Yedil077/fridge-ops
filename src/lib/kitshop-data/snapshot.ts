@@ -5,7 +5,7 @@ import { dayNumber, minuteOfDay } from "../time";
 import { categorizeProduct } from "@/services/kitshop/adapter";
 import type { KsDataset } from "./dataset";
 import { buildTimeline, type TimelineInput } from "./stockTimeline";
-import { fridgeChecks } from "./checks";
+import { continuity, fridgeChecks } from "./checks";
 
 /**
  * NetworkSnapshot built ONLY from the real KiT Shop copy (no simulator anywhere).
@@ -208,6 +208,21 @@ function buildProductDays(ds: KsDataset, fridges: Fridge[], products: Product[],
   for (const f of ds.fillUps.values()) if (!f.detailed && f.at !== null && f.at < settle && f.at > fillFrom) fillFrom = f.at;
   const validFrom = Math.max(salesFrom, fillFrom);
 
+  // raw movements per fridge × dish for the delivery batches (engine/batches.ts)
+  const evAt = new Map<number, number[]>();
+  const evQty = new Map<number, number[]>();
+  const evKind = new Map<number, number[]>();
+  const pushEv = (i: number, t: number, q: number, k: number) => {
+    if (t < validFrom - 4 * 86_400_000) return;
+    if (!evAt.has(i)) {
+      evAt.set(i, []);
+      evQty.set(i, []);
+      evKind.set(i, []);
+    }
+    evAt.get(i)!.push(t);
+    evQty.get(i)!.push(q);
+    evKind.get(i)!.push(k);
+  };
   const perShop = new Map<string, { sales: TimelineInput["sales"]; fills: TimelineInput["fills"] }>();
   const shopOf = (id: string) => {
     let x = perShop.get(id);
@@ -221,7 +236,10 @@ function buildProductDays(ds: KsDataset, fridges: Fridge[], products: Product[],
     for (const line of ds.positions.get(sale.saleId) ?? []) {
       ev.sales.push({ at: sale.soldAt, productId: line.productId, qty: line.qty });
       const p = pIdx.get(line.productId);
-      if (p !== undefined) seen(f, p, dayNumber(sale.soldAt));
+      if (p !== undefined) {
+        seen(f, p, dayNumber(sale.soldAt));
+        pushEv(f * P + p, sale.soldAt, line.qty, 0);
+      }
     }
   }
   for (const fu of ds.fillUps.values()) {
@@ -234,6 +252,7 @@ function buildProductDays(ds: KsDataset, fridges: Fridge[], products: Product[],
       ev.fills.push({ at: fu.at, productId: line.productId, qty: dir.delta });
       const p = pIdx.get(line.productId);
       if (p === undefined) continue;
+      pushEv(f * P + p, fu.at, Math.abs(dir.delta), dir.kind === "load" ? 1 : dir.kind === "unload" ? 2 : 3);
       if (dir.kind === "load") seen(f, p, day);
       const d = day - startDay;
       if (d < 0 || d >= D) continue;
@@ -294,6 +313,16 @@ function buildProductDays(ds: KsDataset, fridges: Fridge[], products: Product[],
     }
   }
 
+  // events sorted by time (a load before a sale at the same second)
+  const events: ProductDays["events"] = new Array(F * P);
+  for (const [i, ats] of evAt) {
+    const qs = evQty.get(i)!;
+    const ks = evKind.get(i)!;
+    const order = ats.map((_, j) => j).sort((x, y) => ats[x] - ats[y] || (ks[x] === 1 ? -1 : 0) - (ks[y] === 1 ? -1 : 0));
+    events[i] = { at: Float64Array.from(order.map((j) => ats[j])), qty: Float32Array.from(order.map((j) => qs[j])), kind: Uint8Array.from(order.map((j) => ks[j])) };
+  }
+  const continuityAll = fridges.map((fr) => continuity(ds, fr, now, historyFromDay));
+
   const today = dayNumber(now);
   const knownDay = Math.min(unbalanced.length < fIdx.size ? Math.ceil(validFrom / 86_400_000) : Infinity, firstCoverage !== null ? dayNumber(firstCoverage) + 1 : Infinity);
   const value: ProductDays = {
@@ -313,13 +342,17 @@ function buildProductDays(ds: KsDataset, fridges: Fridge[], products: Product[],
     reconstructionFixes: fixes,
     unbalanced,
     writeOffRule: WRITE_OFF_RULE,
-    checks: fridges.map((fr) =>
+    checks: fridges.map((fr, f) =>
       fridgeChecks(ds, fr, now, {
         historyFromDay,
         fillupsFromDay: fb === null ? null : Math.ceil(fillFrom / 86_400_000),
         balanced: balancedByShop.get(fr.externalId) ?? true,
+        continuity: continuityAll[f],
       }),
     ),
+    events,
+    eventsFrom: validFrom,
+    continuity: continuityAll,
   };
   pdCache.set(ds, { key, value });
   return value;

@@ -3,6 +3,7 @@ import path from "node:path";
 import type { Mission, Weekday } from "../domain/types";
 import type { LearningState } from "../engine/feedback";
 import type { ConfirmedMapping } from "../kitshop-ops/mapping";
+import type { ShelfLifeSettings } from "../config/shelfLife";
 import type { AuditEntry, KsOperation } from "../kitshop-ops/types";
 import type { KitShopAdminState } from "../kitshop-ops/writeTest";
 import type { SimState } from "../simulator/simulator";
@@ -145,6 +146,8 @@ export interface AppState {
   productMappings: Record<string, ConfirmedMapping>;
   /** clock time of the user forecast mode "ДО HH:MM" (minutes, default 20:00) — NOT a closing time of the network */
   untilMinute?: number;
+  /** срок годности: per category / per dish overrides (Настройки, dish card) */
+  shelfLife?: ShelfLifeSettings;
   /** PAUSE ALL WRITES flag, Phase D test shop / product and the REAL WRITE TEST run */
   kitshopAdmin: KitShopAdminState;
 }

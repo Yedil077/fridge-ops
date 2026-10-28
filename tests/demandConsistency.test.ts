@@ -109,6 +109,7 @@ function kitshopDataset(opts: { undetailedDaysAgo?: number } = {}) {
   ];
   for (const p of products) ds.products.set(p.id, { productId: p.id, name: p.name, barcode: null, vendorCode: null, price: p.price, groupId: null });
   let id = 0;
+  const soldBy = new Map<string, number>();
   // 60 days, weekdays only, lunch peak; SATTI 2 (621826) sells much more hot food
   for (let d = 60; d >= 0; d--) {
     const dayStart = Math.floor((NOW - d * DAY) / DAY) * DAY;
@@ -125,6 +126,7 @@ function kitshopDataset(opts: { undetailedDaysAgo?: number } = {}) {
           const saleId = String(++id);
           const pid = si === 1 ? (k % 3 === 0 ? "3" : "1") : products[(k + h) % 4].id;
           const detailed = !(opts.undetailedDaysAgo !== undefined && d === opts.undetailedDaysAgo && k === 0);
+          soldBy.set(`${d}|${shop}|${pid}`, (soldBy.get(`${d}|${shop}|${pid}`) ?? 0) + (detailed ? 1 : 0));
           ds.sales.set(saleId, { saleId, shopId: shop, soldAt: at, total: 2000, detailed });
           if (detailed) ds.positions.set(saleId, [{ saleId, positionId: saleId, productId: pid, qty: 1, price: 2000 }]);
         }
@@ -136,7 +138,31 @@ function kitshopDataset(opts: { undetailedDaysAgo?: number } = {}) {
   ds.stock.set("621826", new Map([["1", 1], ["3", 1]]));
   ds.stock.set("621586", new Map([["1", 4], ["2", 4], ["3", 2], ["4", 3]]));
   for (const id of SATTI) ds.stockAt.set(id, NOW);
+  // deliveries (KiT Shop loads, type 1) every working morning: what that day sells + 1; the 1 left is unloaded at 19:00
+  // (type 2). Today: what sold so far + the stock above.
+  let fid = 0;
+  const fill = (at: number, shop: string, pid: string, qty: number, type: 1 | 2) => {
+    if (qty <= 0) return;
+    const f = String(++fid);
+    ds.fillUps.set(f, { fillupId: f, shopId: shop, at, type, notes: null, userName: "test", detailed: true });
+    ds.fillUpLines.set(f, [{ fillupId: f, lineId: "0", productId: pid, qty }]);
+  };
+  for (let d = 60; d >= 0; d--) {
+    const dayStart = Math.floor((NOW - d * DAY) / DAY) * DAY;
+    const wd = new Date(dayStart).getUTCDay();
+    if (wd === 0 || wd === 6) continue;
+    for (const shop of SATTI)
+      for (const pr of products) {
+        const n = soldBy.get(`${d}|${shop}|${pr.id}`) ?? 0;
+        if (d === 0) fill(dayStart + 7 * 3_600_000, shop, pr.id, n + (ds.stock.get(shop)?.get(pr.id) ?? 0), 1);
+        else if (n > 0) {
+          fill(dayStart + 7 * 3_600_000, shop, pr.id, n + 1, 1);
+          fill(dayStart + 19 * 3_600_000, shop, pr.id, 1, 2);
+        }
+      }
+  }
   ds.state.backfillFrom = NOW - 61 * DAY;
+  ds.state.fillupsBackfillFrom = NOW - 61 * DAY;
   return ds;
 }
 

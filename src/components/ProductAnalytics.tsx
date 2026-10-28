@@ -2,11 +2,13 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import clsx from "clsx";
-import { api, useProductAnalytics, type ProductAnalyticsView } from "@/lib/client/api";
+import { useQueryClient } from "@tanstack/react-query";
+import { api, atLeast, useMe, useProductAnalytics, type ProductAnalyticsView } from "@/lib/client/api";
 import type { SheetCompare } from "@/lib/server/sheetCompare";
 
 type Row = ProductAnalyticsView["products"][number];
 type Check = ProductAnalyticsView["fridge"]["checks"][number];
+type Day = ProductAnalyticsView["fridge"]["continuity"][number];
 
 export const STATUS_CLS: Record<Row["status"], string> = {
   NORMAL: "bg-good/15 text-good-ink",
@@ -22,28 +24,28 @@ const CHECK_ICON: Record<Check["level"], string> = { OK: "✅", WARN: "⚠️", 
 
 const FILTERS = [
   { id: "all", label: "Все", test: () => true },
-  { id: "high", label: "Высокий спрос", test: (r: Row) => r.demand === "HIGH" },
-  { id: "low", label: "Низкий спрос", test: (r: Row) => r.demand === "LOW" || r.status === "RARE" },
-  { id: "out", label: "Часто не хватает", test: (r: Row) => r.status === "MORE" },
-  { id: "much", label: "Много остатков/снятий", test: (r: Row) => r.status === "TOO_MUCH" || r.status === "LESS" },
-  { id: "need", label: "Добавить сегодня", test: (r: Row) => (r.today?.need ?? 0) > 0 },
-  { id: "new", label: "Новые", test: (r: Row) => r.isNew },
-  { id: "nodata", label: "Нет данных", test: (r: Row) => r.status === "NO_DATA" },
+  { id: "delivered", label: "Есть поставки", test: (r: Row) => r.batches.count + r.batches.open > 0 },
+  { id: "more", label: "Ставить больше", test: (r: Row) => r.status === "MORE" },
+  { id: "less", label: "Ставить меньше / лишнее", test: (r: Row) => r.status === "LESS" || r.status === "TOO_MUCH" },
+  { id: "deliver", label: "Поставка сегодня", test: (r: Row) => (r.plan?.delivery ?? 0) > 0 },
+  { id: "expired", label: "Есть просроченные", test: (r: Row) => r.expiredNow > 0 },
+  { id: "rare", label: "Редкий спрос", test: (r: Row) => r.status === "RARE" },
+  { id: "nodata", label: "Недостаточно данных", test: (r: Row) => r.status === "NO_DATA" },
   { id: "unused", label: "Не используются", test: (r: Row) => r.status === "UNUSED" },
 ] as const;
 
-type SortKey = "name" | "sold7" | "sold30" | "days" | "loaded" | "stock" | "norm" | "need" | "quality" | "status";
+type SortKey = "name" | "batches" | "sold" | "sell" | "lost" | "stock" | "norm" | "delivery" | "quality" | "status";
 const SORTS: Record<SortKey, (r: Row) => number | string> = {
   name: (r) => r.name,
-  sold7: (r) => r.sold.d7,
-  sold30: (r) => r.sold.d30,
-  days: (r) => r.salesDays30,
-  loaded: (r) => r.removed30 + r.writtenOff30,
+  batches: (r) => r.batches.count,
+  sold: (r) => r.batches.sold,
+  sell: (r) => r.batches.sellThrough ?? -1,
+  lost: (r) => r.batches.unloaded + r.batches.writtenOff,
   stock: (r) => r.stock,
   norm: (r) => r.norm?.rec ?? -1,
-  need: (r) => (r.today?.need ?? 0) * 100 - (r.today?.surplus ?? 0),
+  delivery: (r) => r.plan?.delivery ?? -1,
   quality: (r) => ["BAD", "INCOMPLETE", "GOOD"].indexOf(r.quality),
-  status: (r) => ["MORE", "TOO_MUCH", "LESS", "RARE", "NORMAL", "NO_DATA", "UNUSED"].indexOf(r.status),
+  status: (r) => ["MORE", "LESS", "TOO_MUCH", "RARE", "NORMAL", "NO_DATA", "UNUSED"].indexOf(r.status),
 };
 
 export const pcs = (n: number) => `${n} шт.`;
@@ -81,7 +83,7 @@ export function FridgeView({ mobile, fridgeId, pick }: { mobile: boolean; fridge
   const { data, error, isFetching } = useProductAnalytics(fridgeId);
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState<(typeof FILTERS)[number]["id"]>("all");
-  const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>({ key: "sold30", desc: true });
+  const [sort, setSort] = useState<{ key: SortKey; desc: boolean }>({ key: "sold", desc: true });
   const [open, setOpen] = useState<string | null>(null);
 
   const rows = useMemo(() => {
@@ -146,6 +148,7 @@ export function FridgeView({ mobile, fridgeId, pick }: { mobile: boolean; fridge
           ))}
       </div>
 
+      <Continuity days={data.fridge.continuity} />
       <Checks checks={data.fridge.checks} />
       {data.data.notes.map((n) => (
         <p key={n} className="mt-2 rounded-xl bg-warn/10 px-3 py-2 text-[12px] text-ink-2">⚠ {n}</p>
@@ -157,11 +160,11 @@ export function FridgeView({ mobile, fridgeId, pick }: { mobile: boolean; fridge
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Поиск блюда" className={clsx("h-10 rounded-xl border border-line bg-surface px-3 text-[15px]", mobile ? "w-full" : "w-64")} />
         {mobile && (
           <select value={sort.key} onChange={(e) => setSort({ key: e.target.value as SortKey, desc: e.target.value !== "name" })} className="h-10 flex-1 rounded-xl border border-line bg-surface px-2 text-[14px]" aria-label="Сортировка">
-            <option value="sold30">по продажам</option>
-            <option value="need">что добавить сегодня</option>
-            <option value="loaded">по снятиям и списаниям</option>
+            <option value="sold">по продажам за срок</option>
+            <option value="delivery">поставка сегодня</option>
+            <option value="sell">по реализации</option>
+            <option value="lost">по снятиям и списаниям</option>
             <option value="stock">по остатку</option>
-            <option value="quality">по качеству данных</option>
             <option value="name">по названию</option>
           </select>
         )}
@@ -183,31 +186,32 @@ export function FridgeView({ mobile, fridgeId, pick }: { mobile: boolean; fridge
                 <StatusChip r={r} />
               </div>
               <div className="mt-1 grid grid-cols-3 gap-1 text-[12px] text-ink-2">
-                <span>30 дн.: <b className="text-ink">{pcs(r.sold.d30)}</b></span>
-                <span>есть: <b className="text-ink">{pcs(r.stock)}</b></span>
-                <span>норма: <b className="text-ink">{r.norm ? pcs(r.norm.rec) : "—"}</b></span>
+                <span>поставок: <b className="text-ink">{r.batches.count}</b></span>
+                <span>реализация: <b className="text-ink">{sellText(r)}</b></span>
+                <span>ставить: <b className="text-ink">{r.norm ? (r.norm.rec ? pcs(r.norm.rec) : "не ежедн.") : "—"}</b></span>
               </div>
               <div className="mt-0.5 text-[12px] text-ink-3">
-                покупали в {r.salesDays30} дн. из {r.openDays30} · данные: <span className={QUALITY_CLS[r.quality]}>{r.qualityText}</span>
+                есть {pcs(r.stock)}{r.expiredNow ? ` (просрочено ${r.expiredNow})` : ""} · данные: <span className={QUALITY_CLS[r.quality]}>{r.qualityText}</span>
               </div>
-              <TodayLine r={r} />
+              <PlanLine r={r} />
             </button>
           ))}
         </div>
       ) : (
         <div className="card mt-3 overflow-x-auto p-0">
-          <table className="w-full min-w-[1080px] text-[13px] [&_td]:px-2 [&_th]:px-2">
+          <table className="w-full min-w-[1180px] text-[13px] [&_td]:px-2 [&_th]:px-2">
             <thead className="sticky top-0 bg-surface text-left text-[11px] uppercase tracking-wide text-ink-3">
               <tr className="border-b border-line">
                 <Th k="name" sort={sort} setSort={setSort}>Блюдо</Th>
-                <Th k="sold7" sort={sort} setSort={setSort} right>Продано 7д</Th>
-                <Th k="sold30" sort={sort} setSort={setSort} right>Продано 30д</Th>
-                <Th k="days" sort={sort} setSort={setSort} right title="дней с продажами из открытых дней холодильника">Дней с продажами</Th>
-                <th className="py-2 text-right" title="сколько штук уходило в день, когда покупали">Обычно</th>
-                <Th k="loaded" sort={sort} setSort={setSort} right title="загружено / снято / подтверждённо списано за 30 дней">Загр. / снято / спис.</Th>
+                <Th k="batches" sort={sort} setSort={setSort} right title="завершённых поставок (срок годности прошёл)">Поставок</Th>
+                <Th k="sold" sort={sort} setSort={setSort} right title="продано за срок годности из поставленного">Продано из поставл.</Th>
+                <Th k="sell" sort={sort} setSort={setSort} right>Реализация</Th>
+                <Th k="lost" sort={sort} setSort={setSort} right title="снято (разгрузка) / подтверждённо списано по этим поставкам">Снято / спис.</Th>
+                <th className="py-2 text-right" title="последние поставки">Обычно ставили</th>
+                <th className="py-2 text-right" title="за срок годности">Обычно продавалось</th>
                 <Th k="stock" sort={sort} setSort={setSort} right>Остаток</Th>
-                <Th k="norm" sort={sort} setSort={setSort} right>Норма (мин–макс)</Th>
-                <Th k="need" sort={sort} setSort={setSort} right>Сегодня</Th>
+                <Th k="norm" sort={sort} setSort={setSort} right>Ставить (диапазон)</Th>
+                <Th k="delivery" sort={sort} setSort={setSort} right>Поставка сегодня</Th>
                 <Th k="quality" sort={sort} setSort={setSort}>Данные</Th>
                 <Th k="status" sort={sort} setSort={setSort}>Статус</Th>
               </tr>
@@ -218,24 +222,23 @@ export function FridgeView({ mobile, fridgeId, pick }: { mobile: boolean; fridge
                   <td className="py-2">
                     <div className="font-semibold">{r.name}</div>
                     <div className="text-[11px] text-ink-3">
-                      {r.category.emoji} {r.category.name}
-                      {r.isNew ? " · НОВОЕ" : ""}
+                      {r.category.emoji} {r.category.name} · срок {r.shelfHours} ч{r.isNew ? " · НОВОЕ" : ""}
                     </div>
                   </td>
-                  <td className="num text-right">{r.sold.d7}</td>
-                  <td className="num text-right">{r.sold.d30}</td>
-                  <td className="num text-right">
-                    {r.salesDays30} <span className="text-ink-3">из {r.openDays30}</span>
-                  </td>
-                  <td className="num whitespace-nowrap text-right">{r.usual ? range(r.usual.low, r.usual.high) : "—"}</td>
+                  <td className="num text-right">{r.batches.count}{r.batches.open ? <span className="text-ink-3"> +{r.batches.open}</span> : ""}</td>
+                  <td className="num whitespace-nowrap text-right">{r.batches.count ? `${r.batches.sold} из ${r.batches.loaded}` : "—"}</td>
+                  <td className="num text-right font-semibold">{sellText(r)}</td>
                   <td className="num whitespace-nowrap text-right">
-                    {r.loaded30} / {r.removed30} / <span className={r.writtenOff30 ? "text-crit-ink" : ""}>{r.writtenOff30}</span>
+                    {r.batches.unloaded} / <span className={r.batches.writtenOff ? "text-crit-ink" : ""}>{r.batches.writtenOff}</span>
                   </td>
-                  <td className="num text-right">{r.stock}</td>
+                  <td className="num whitespace-nowrap text-right">{r.batches.usualLoaded ? range(r.batches.usualLoaded.low, r.batches.usualLoaded.high) : "—"}</td>
+                  <td className="num whitespace-nowrap text-right">{r.batches.usualSold ? range(r.batches.usualSold.low, r.batches.usualSold.high) : "—"}</td>
+                  <td className="num whitespace-nowrap text-right">
+                    {r.stock}
+                    {r.expiredNow ? <span className="text-crit-ink" title="старше срока годности"> ({r.expiredNow} проср.)</span> : ""}
+                  </td>
                   <td className="num whitespace-nowrap text-right font-bold">{r.norm ? (r.norm.rec === 0 ? "не ежедневно" : `${r.norm.rec} (${r.norm.min}–${r.norm.max})`) : "—"}</td>
-                  <td className="whitespace-nowrap text-right">
-                    <TodayCell r={r} />
-                  </td>
+                  <td className="whitespace-nowrap text-right">{r.plan ? (r.plan.delivery > 0 ? <b className="text-crit-ink">+{r.plan.delivery} шт.</b> : <span className="text-ink-3">хватает</span>) : "—"}</td>
                   <td className={clsx("whitespace-nowrap text-[12px] font-semibold", QUALITY_CLS[r.quality])} title={r.qualityReason}>
                     {r.qualityText}
                   </td>
@@ -249,7 +252,7 @@ export function FridgeView({ mobile, fridgeId, pick }: { mobile: boolean; fridge
           {rows.length === 0 && <p className="p-6 text-center text-ink-3">Ничего не найдено</p>}
         </div>
       )}
-      <p className="mt-2 text-[11px] text-ink-3">Все количества — целые штуки. Нажмите на блюдо — подробный разбор и «почему».</p>
+      <p className="mt-2 text-[11px] text-ink-3">Считаются поставки: поставили → продано за срок годности (сначала старые штуки) → снято / списано / осталось. Целые штуки. Нажмите на блюдо — все его поставки и «почему».</p>
 
       <details className="mt-4 text-[12px] text-ink-2">
         <summary className="cursor-pointer font-semibold">Как считается норма и откуда данные</summary>
@@ -433,9 +436,13 @@ function ProductDetail({ r, fridge, untilTime, onClose, mobile }: { r: Row; frid
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
   const t = r.today;
+  const when = (ms: number) => {
+    const d = new Date(ms);
+    return `${String(d.getUTCDate()).padStart(2, "0")}.${String(d.getUTCMonth() + 1).padStart(2, "0")} ${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
+  };
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/40" onClick={onClose}>
-      <div className={clsx("h-full overflow-y-auto bg-bg p-4 shadow-xl", mobile ? "w-full" : "w-[520px]")} onClick={(e) => e.stopPropagation()} role="dialog" aria-label={r.name}>
+      <div className={clsx("h-full overflow-y-auto bg-bg p-4 shadow-xl", mobile ? "w-full" : "w-[600px]")} onClick={(e) => e.stopPropagation()} role="dialog" aria-label={r.name}>
         <div className="flex items-start justify-between gap-3">
           <div>
             <h2 className="text-[20px] font-bold uppercase leading-tight">{r.name}</h2>
@@ -454,7 +461,7 @@ function ProductDetail({ r, fridge, untilTime, onClose, mobile }: { r: Row; frid
           {r.norm && r.norm.rec > 0 && (
             <div className="mt-2 grid grid-cols-3 gap-2 text-center">
               <Big label="минимум" value={pcs(r.norm.min)} />
-              <Big label="норма" value={pcs(r.norm.rec)} strong />
+              <Big label="ставить" value={pcs(r.norm.rec)} strong />
               <Big label="максимум" value={pcs(r.norm.max)} />
             </div>
           )}
@@ -476,27 +483,94 @@ function ProductDetail({ r, fridge, untilTime, onClose, mobile }: { r: Row; frid
           <div className="mt-1 text-[12px]">
             Данные: <b className={QUALITY_CLS[r.quality]}>{r.qualityText}</b> — {r.qualityReason}
           </div>
+          <ShelfLifeEdit r={r} />
         </section>
 
-        {t && r.norm && (
+        {r.plan && (
           <section className="card mt-3 p-4">
-            <div className="label">Сегодня</div>
+            <div className="label">Поставка сегодня</div>
             <div className="mt-1 grid grid-cols-3 gap-2 text-center">
-              <Big label="иметь" value={pcs(t.target)} />
-              <Big label="сейчас" value={pcs(t.stock)} />
-              <Big label={t.need > 0 ? "добавить" : t.surplus > 0 ? "можно забрать" : "итог"} value={t.need > 0 ? pcs(t.need) : t.surplus > 0 ? pcs(t.surplus) : "хватает"} tone={t.need > 0 ? "crit" : t.surplus > 0 ? "good" : undefined} />
+              <Big label="целевая выкладка" value={pcs(r.plan.target)} />
+              <Big label="сейчас годных" value={pcs(r.plan.fresh)} />
+              <Big label="новая поставка" value={r.plan.delivery > 0 ? `+${r.plan.delivery} шт.` : "не нужна"} tone={r.plan.delivery > 0 ? "crit" : "good"} />
             </div>
-            <div className="mt-2 text-[12px] text-ink-3">
-              {t.reason}
-              {t.eveningTarget !== null ? ` · до ${untilTime} нужно ${pcs(t.eveningTarget)}` : ""}
-              {t.inbound ? ` · уже едет ${pcs(t.inbound)}` : ""}
-              {t.outbound ? ` · уже отдаём ${pcs(t.outbound)}` : ""}
+            {r.expiredNow > 0 && <p className="mt-2 text-[12px] font-semibold text-crit-ink">Старше срока годности ({r.shelfHours} ч): {pcs(r.expiredNow)} — снять.</p>}
+          </section>
+        )}
+
+        <section className="card mt-3 p-4">
+          <div className="label mb-2">Возраст остатка (сейчас {pcs(r.stock)})</div>
+          <div className="grid grid-cols-4 gap-1 text-center text-[12px]">
+            {r.ages.map((a) => (
+              <Small key={a.from} label={`${a.from}–${a.to} ч`} value={a.qty} />
+            ))}
+            <Small label="просрочено" value={r.expiredNow} />
+          </div>
+          <p className="mt-1 text-[11px] text-ink-3">Сначала продаются и учитываются более старые штуки. Возраст — по загрузкам KiT Shop.</p>
+        </section>
+
+        <section className="card mt-3 p-4">
+          <div className="label mb-2">Поставки{r.batches.since ? ` с ${when(r.batches.since).slice(0, 5)}` : ""}</div>
+          <Lines
+            rows={[
+              ["Количество поставок (завершённых)", `${r.batches.count}${r.batches.open ? ` (+${r.batches.open} ещё в продаже)` : ""}`],
+              ["Всего поставлено", pcs(r.batches.loaded)],
+              ["Продано за срок годности", pcs(r.batches.sold)],
+              ["Снято (разгрузка: перенос, возврат…)", pcs(r.batches.unloaded)],
+              ["Подтверждённо списано", pcs(r.batches.writtenOff)],
+              ["Осталось к концу срока", pcs(r.batches.left)],
+              ["Реализация", r.batches.sellThrough === null ? "—" : `${r.batches.sold} из ${r.batches.loaded} (${Math.round(r.batches.sellThrough * 100)}%)`],
+              ["Обычно ставили", r.batches.usualLoaded ? range(r.batches.usualLoaded.low, r.batches.usualLoaded.high) : "—"],
+              ["Обычно продавалось", r.batches.usualSold ? range(r.batches.usualSold.low, r.batches.usualSold.high) : "—"],
+              ["Обычно оставалось", r.batches.usualLeft ? range(r.batches.usualLeft.low, r.batches.usualLeft.high) : "—"],
+            ]}
+          />
+        </section>
+
+        {r.recent.length > 0 && (
+          <section className="card mt-3 p-0">
+            <div className="label px-4 pt-3">Последние поставки</div>
+            <div className="overflow-x-auto">
+              <table className="mt-2 w-full min-w-[540px] text-[12px] [&_td]:px-2 [&_th]:px-2">
+                <thead className="text-left text-ink-3">
+                  <tr className="border-b border-line">
+                    <th className="py-1">Когда</th>
+                    <th className="text-right">Было</th>
+                    <th className="text-right">Поставили</th>
+                    <th className="text-right">Продано 24 ч</th>
+                    <th className="text-right">За срок</th>
+                    <th className="text-right">Снято</th>
+                    <th className="text-right">Спис.</th>
+                    <th className="text-right">Осталось</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {r.recent.map((b) => (
+                    <tr key={b.at} className={clsx("border-b border-line last:border-0", !b.complete && "text-ink-3")}>
+                      <td className="py-1 whitespace-nowrap">
+                        {when(b.at)}
+                        {!b.complete ? " · в продаже" : b.soldOut ? " · ушло всё" : ""}
+                      </td>
+                      <td className="num text-right">{b.before}</td>
+                      <td className="num text-right font-semibold">{b.loaded}</td>
+                      <td className="num text-right">{b.sold24}</td>
+                      <td className="num text-right font-semibold">
+                        {b.soldInShelf}
+                        {b.soldAfter ? <span className="text-ink-3"> +{b.soldAfter} позже</span> : ""}
+                      </td>
+                      <td className="num text-right">{b.unloaded}</td>
+                      <td className={clsx("num text-right", b.writtenOff && "text-crit-ink")}>{b.writtenOff}</td>
+                      <td className="num text-right">{b.leftAtExpiry ?? "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </section>
         )}
 
         <section className="card mt-3 p-4">
-          <div className="label mb-2">Продано</div>
+          <div className="label mb-2">Продано по дням календаря</div>
           <div className="grid grid-cols-5 gap-1 text-center text-[12px]">
             <Small label="7 дн." value={r.sold.d7} />
             <Small label="30 дн." value={r.sold.d30} />
@@ -507,54 +581,102 @@ function ProductDetail({ r, fridge, untilTime, onClose, mobile }: { r: Row; frid
           <Lines
             rows={[
               ["Сегодня", pcs(r.soldToday)],
-              ["Дней с продажами (30 дн.)", `${r.salesDays30} из ${r.openDays30}`],
-              ["Обычно продаётся", r.usual ? `${range(r.usual.low, r.usual.high)} за день${r.basis === "FACT" ? " с наличием" : ", когда покупают"}` : "—"],
-              ["В дни высокого спроса", r.strongDay !== null ? pcs(r.strongDay) : "—"],
-              ["30 дней к предыдущим 30", r.sales30VsPrevPct === null ? "—" : `${r.sales30VsPrevPct > 0 ? "+" : ""}${r.sales30VsPrevPct}%`],
+              ["За 30 дней: загружено / снято / списано", `${r.loaded30} / ${r.removed30} / ${r.writtenOff30} шт.`],
             ]}
           />
         </section>
 
-        <section className="card mt-3 p-4">
-          <div className="label mb-2">Остаток и движение (30 дней)</div>
-          <Lines
-            rows={[
-              ["Текущий остаток", pcs(r.stock)],
-              ["Загружено", pcs(r.loaded30)],
-              ["Снято (разгрузки: перенос, возврат…)", pcs(r.removed30)],
-              ["Подтверждённо списано", pcs(r.writtenOff30)],
-            ]}
-          />
-        </section>
-
-        <section className="card mt-3 p-4">
-          <div className="label mb-2">Наличие</div>
-          <div className="text-[12px] font-semibold text-ink-2">ФАКТ — история остатков каждые 5 минут</div>
-          {r.fact.days ? (
-            <Lines
-              rows={[
-                ["Дней с подтверждённым наличием", `${r.fact.inStock} из ${r.fact.days}`],
-                ["Дней без товара", String(r.fact.out)],
-                ["Сколько раз закончился", String(r.fact.ranOut)],
-              ]}
-            />
-          ) : (
-            <p className="mt-1 text-[12px] text-ink-3">Пока нет ни одного полного дня истории остатков.</p>
-          )}
-          <div className="mt-3 text-[12px] font-semibold text-ink-2">ОЦЕНКА — восстановлено по продажам и загрузкам (в норму не входит)</div>
-          {r.estimate ? (
-            <Lines
-              rows={[
-                ["Дней в наличии (оценка)", `${r.estimate.inStock} из ${r.estimate.days}`],
-                ["Дней без товара (оценка)", String(r.estimate.out)],
-                ["Закончился (оценка)", String(r.estimate.ranOut)],
-              ]}
-            />
-          ) : (
-            <p className="mt-1 text-[12px] text-ink-3">Оценки нет: загрузки и продажи не позволяют её построить.</p>
-          )}
-        </section>
+        {t && r.norm && (t.need > 0 || t.surplus > 0) && (
+          <section className="card mt-3 p-4 text-[13px]">
+            <div className="label mb-1">Перемещение между холодильниками сейчас</div>
+            {t.need > 0 ? `Привезти из другого холодильника ${pcs(t.need)}` : `Можно забрать в другой холодильник ${pcs(t.surplus)}`} — {t.reason}
+            {t.eveningTarget !== null ? ` · до ${untilTime} нужно ${pcs(t.eveningTarget)}` : ""}
+          </section>
+        )}
       </div>
+    </div>
+  );
+}
+
+function sellText(r: Row) {
+  return r.batches.sellThrough === null ? "—" : `${Math.round(r.batches.sellThrough * 100)}%`;
+}
+
+function PlanLine({ r }: { r: Row }) {
+  if (!r.plan) return null;
+  return (
+    <div className={clsx("mt-1 text-[13px] font-semibold", r.plan.delivery > 0 ? "text-crit-ink" : "text-good-ink")}>
+      Выкладка {pcs(r.plan.target)}, сейчас годных {pcs(r.plan.fresh)} → {r.plan.delivery > 0 ? `поставить +${r.plan.delivery} шт.` : "поставка не нужна"}
+    </div>
+  );
+}
+
+/** 30 days of the fridge: data / closed / DATA GAP. */
+function Continuity({ days }: { days: Day[] }) {
+  if (!days.length) return null;
+  const gaps = days.filter((d) => d.status === "GAP").length;
+  const fmt = (day: number) => {
+    const d = new Date(day * 86_400_000);
+    return `${String(d.getUTCDate()).padStart(2, "0")}.${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+  };
+  return (
+    <section className="mt-3 text-[12px]">
+      <div className="mb-1 font-semibold">
+        Данные по дням (30 дней): {gaps ? <span className="text-crit-ink">DATA GAP — {gaps} дн.</span> : <span className="text-good-ink">без дыр</span>}
+      </div>
+      <div className="flex gap-0.5">
+        {days.map((d) => (
+          <div
+            key={d.day}
+            title={`${fmt(d.day)}: ${d.note}`}
+            className={clsx("h-6 flex-1 rounded-sm", d.status === "DATA" ? "bg-good/60" : d.status === "CLOSED" ? "bg-surface-3" : "bg-crit")}
+          />
+        ))}
+      </div>
+      <div className="mt-0.5 flex justify-between text-[10px] text-ink-3">
+        <span>{fmt(days[0].day)}</span>
+        <span>🟩 данные · ⬜ не работала · 🟥 DATA GAP</span>
+        <span>{fmt(days[days.length - 1].day)}</span>
+      </div>
+    </section>
+  );
+}
+
+/** Срок годности of this dish (ADMIN): its own value or back to the category's. */
+function ShelfLifeEdit({ r }: { r: Row }) {
+  const me = useMe().data;
+  const qc = useQueryClient();
+  const [v, setV] = useState(String(r.shelfHours));
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const save = async (hours: number | null) => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await api("/api/admin/settings", { method: "PUT", body: JSON.stringify({ shelfLife: { products: { [r.productId]: hours } } }) });
+      await qc.invalidateQueries();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (!atLeast(me, "ADMIN"))
+    return <div className="mt-1 text-[12px]">Срок годности: <b>{r.shelfHours} ч</b>{r.shelfSource === "product" ? " (для этого блюда)" : " (по категории)"}</div>;
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-2 text-[12px]">
+      <span>Срок годности:</span>
+      <input value={v} onChange={(e) => setV(e.target.value.replace(/\D/g, ""))} inputMode="numeric" className="h-8 w-16 rounded-md border border-line bg-surface px-2 text-right" />
+      <span>ч {r.shelfSource === "product" ? "(для этого блюда)" : "(по категории)"}</span>
+      <button disabled={busy || !v || Number(v) === r.shelfHours} onClick={() => save(Number(v))} className="h-8 rounded-md bg-surface-3 px-3 font-semibold disabled:opacity-40">
+        Сохранить для блюда
+      </button>
+      {r.shelfSource === "product" && (
+        <button disabled={busy} onClick={() => save(null)} className="h-8 rounded-md px-2 underline disabled:opacity-40">
+          как у категории
+        </button>
+      )}
+      {err && <span className="text-crit-ink">{err}</span>}
     </div>
   );
 }

@@ -6,6 +6,7 @@ import { demandIndex, personality } from "./profile";
 import { DEFAULT_UNTIL_MINUTE, recommend, type MissionDraft, type Reservation } from "./recommend";
 import { demandGrid, type DemandGrid, type Horizon } from "./demand";
 import { productStats, type ProductStats } from "./productNorm";
+import type { ShelfLifeSettings } from "../config/shelfLife";
 
 /**
  * Hourly analysis pipeline:
@@ -56,8 +57,11 @@ export function analyze(
   activeMissions: Mission[],
   mode: ForecastMode = "realtime",
   untilMinute?: number,
+  opts: { shelfLife?: ShelfLifeSettings } = {},
 ): AnalysisResult {
   const ctx = buildContext(snap, (f, c) => learning.forecastBias[biasKey(snap.fridges[f].id, snap.categories[c].id)] ?? 1);
+  // product analytics first (with the shelf lives from Настройки): demand and the recommendations read the same result
+  const products = productStats(ctx, opts.shelfLife);
   const forecasts = snap.fridges.map((_, f) => forecastFridge(ctx, f));
   const di = demandIndex(ctx);
   const promised = reservationsFrom(activeMissions, snap);
@@ -71,7 +75,7 @@ export function analyze(
     NOW: demandGrid(ctx, forecasts, { horizon: "NOW", untilMinute: until, promised }),
     UNTIL_EVENING: demandGrid(ctx, forecasts, { horizon: "UNTIL_EVENING", untilMinute: until, promised }),
   };
-  return { ctx, forecasts, demandIndex: di, drafts, demand, products: productStats(ctx), untilMinute: until };
+  return { ctx, forecasts, demandIndex: di, drafts, demand, products, untilMinute: until };
 }
 
 export function personalities(ctx: EngineContext, di: DemandIndexRow[]): FridgePersonality[] {

@@ -1,5 +1,6 @@
-import type { DataCheck, Fridge } from "../domain/types";
+import type { DataCheck, DayStatus, Fridge } from "../domain/types";
 import { dayNumber, minuteOfDay } from "../time";
+import { fillDirection } from "./snapshot";
 import type { KsDataset } from "./dataset";
 
 /**
@@ -13,11 +14,60 @@ const ddmm = (day: number) => {
   return `${String(d.getUTCDate()).padStart(2, "0")}.${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
 };
 
+/**
+ * Continuity of the last 30 days of one fridge: every day has receipts (DATA), or the fridge usually does not sell on
+ * that weekday (CLOSED: at most a third of the same weekdays in the 8 weeks before had receipts), otherwise it is a GAP —
+ * receipts missing while the fridge works, far fewer than on the same weekdays (< 20 %), receipts without lines, or a day
+ * before the complete history.
+ */
+export function continuity(ds: KsDataset, fr: Fridge, now: number, historyFromDay: number): DayStatus[] {
+  const today = dayNumber(now);
+  const count = new Map<number, number>();
+  const undetailed = new Map<number, number>();
+  const settle = now - 30 * 60_000;
+  for (const s of ds.sales.values()) {
+    if (s.shopId !== fr.externalId) continue;
+    const d = dayNumber(s.soldAt);
+    if (d < today - 90 || d >= today) continue;
+    count.set(d, (count.get(d) ?? 0) + 1);
+    if (!s.detailed && s.soldAt < settle) undetailed.set(d, (undetailed.get(d) ?? 0) + 1);
+  }
+  const out: DayStatus[] = [];
+  for (let d = today - 30; d < today; d++) {
+    const c = count.get(d) ?? 0;
+    const same = [1, 2, 3, 4, 5, 6, 7, 8].map((w) => d - 7 * w).filter((x) => x >= historyFromDay).map((x) => count.get(x) ?? 0);
+    const worked = same.filter((x) => x > 0);
+    const usual = worked.length ? [...worked].sort((a, b) => a - b)[Math.floor(worked.length / 2)] : 0;
+    let status: DayStatus["status"] = "DATA";
+    let note = `${c} чеков`;
+    if (d < historyFromDay) {
+      status = "GAP";
+      note = "история ещё не загружена";
+    } else if ((undetailed.get(d) ?? 0) > 0) {
+      status = "GAP";
+      note = `${undetailed.get(d)} чеков без состава`;
+    } else if (c === 0) {
+      if (same.length && worked.length > same.length / 3) {
+        status = "GAP";
+        note = `нет чеков, а в этот день недели обычно ~${usual}`;
+      } else {
+        status = "CLOSED";
+        note = "в этот день недели обычно не работает";
+      }
+    } else if (usual >= 10 && c < 0.2 * usual) {
+      status = "GAP";
+      note = `${c} чеков, а обычно ~${usual}`;
+    }
+    out.push({ day: d, receipts: c, status, note });
+  }
+  return out;
+}
+
 export function fridgeChecks(
   ds: KsDataset,
   fr: Fridge,
   now: number,
-  info: { historyFromDay: number; fillupsFromDay: number | null; balanced: boolean },
+  info: { historyFromDay: number; fillupsFromDay: number | null; balanced: boolean; continuity?: DayStatus[] },
 ): DataCheck[] {
   const shopId = fr.externalId;
   const today = dayNumber(now);
@@ -117,6 +167,32 @@ export function fridgeChecks(
     "Новые чеки приходят",
     usual >= 10 && last24 < 0.2 * usual ? "FAIL" : "OK",
     `за последние 24 ч ${last24} чеков; в те же часы неделей раньше обычно ~${Math.round(usual)}`,
+  );
+
+  // continuity: no day of the last 30 without data while the fridge works
+  const gaps = (info.continuity ?? []).filter((d) => d.status === "GAP");
+  add(
+    "continuity",
+    "История продаж без дыр (30 дней)",
+    gaps.length ? "FAIL" : "OK",
+    gaps.length ? `DATA GAP: ${gaps.slice(-6).map((g) => `${ddmm(g.day)} — ${g.note}`).join("; ")}${gaps.length > 6 ? ` и ещё ${gaps.length - 6}` : ""}` : "каждый рабочий день за 30 дней есть чеки с составом",
+  );
+
+  // load / unload / write-off types read correctly
+  let unknownType = 0;
+  const byKind = { load: 0, unload: 0, writeoff: 0 };
+  for (const f of ds.fillUps.values()) {
+    if (f.shopId !== shopId || f.at === null || f.at < now - 30 * DAY) continue;
+    for (const l of ds.fillUpLines.get(f.fillupId) ?? []) {
+      if (f.type !== 1 && f.type !== 2 && f.type !== 3) unknownType++;
+      byKind[fillDirection(f.type, l.qty).kind] += Math.abs(l.qty);
+    }
+  }
+  add(
+    "fill-types",
+    "Типы 1/2/3 разобраны",
+    unknownType ? "WARN" : "OK",
+    `за 30 дней: загрузка (1) ${Math.round(byKind.load)} шт., разгрузка (2) ${Math.round(byKind.unload)} шт., списание (3) ${Math.round(byKind.writeoff)} шт.${unknownType ? `; ${unknownType} строк с неизвестным типом` : ""}`,
   );
 
   // completeness

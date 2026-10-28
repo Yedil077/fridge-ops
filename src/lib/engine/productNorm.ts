@@ -1,36 +1,35 @@
 import { histDay, type EngineContext } from "./history";
+import { analyseBatches, type Batch } from "./batches";
+import { shelfHoursFor, type ShelfLifeSettings } from "../config/shelfLife";
 
 /**
- * PRODUCT × FRIDGE: how many of THIS dish to put into THIS fridge per day — in WHOLE units, from facts.
+ * PRODUCT × FRIDGE — the question of the business:
+ *   «Когда мы ставим это блюдо в этот холодильник, сколько штук поставить, чтобы за срок годности (48 / 72 ч)
+ *    почти всё продалось и было минимум списаний?»
  *
- * People buy whole dishes, so everything shown is a count of units; averages stay inside.
- *  1. Sample days (last 30 days, 60 if the dish sells rarely):
- *       • FACT — days when the 5-minute stock history shows the dish was there most of the selling time (zeros count:
- *         it was there and nobody bought it);
- *       • otherwise days WITH SALES (the dish surely was there; days without sales are not taken as "no demand",
- *         because without the stock history we do not know whether it was there) — the result is less certain.
- *     The reconstruction of past stock is an ESTIMATE: shown separately, never used for the norm.
- *  2. Units sold per sample day → "обычно" = 25–75 %, "в сильные дни" = 90 %.
- *  3. Norm = 75 % of the sample days (at least 1), minimum = 25 % (at least 1), maximum = 90 %.
- *  4. Losses (KiT Shop operations, facts): unloads + write-offs ≥ 30 % of what was loaded → norm = the usual day (median).
- *     Sold out on ≥ 25 % of the FACT days → norm + 1 (not above maximum + 1).
- *  5. Rare: bought on ≤ 30 % of open days → if the stock history confirms it stood there → "не держать ежедневно",
- *     otherwise 1 unit with low confidence.
- * Data quality and confidence come from the fridge's data checks and from how much real history there is.
+ * Built on DELIVERIES (engine/batches.ts), never on "sales per calendar day": days when the dish was not in the menu
+ * simply have no delivery and do not count.
+ *  1. Every delivery: loaded → sold within the shelf life (FIFO: the oldest units go first) → unloaded / written off /
+ *     left when the shelf life ended. Sell-through = sold within shelf life ÷ loaded.
+ *  2. The norm from the last 8 COMPLETE deliveries (shelf life over, no data gap):
+ *       ставить = how many usually sold within the shelf life (median), range = weak … usual loading;
+ *       the last 3 deliveries all sold out → +1 (the demand was higher than what was there). Deliveries that keep leaving
+ *       2+ for write-off are cut by construction (ставить = sold, not loaded) and named in "почему".
+ *  3. Today's delivery = target − what is still fresh in the fridge (expired units do not count).
+ * Whole units only. A failed data check → no norm at all ("ДАННЫЕ НЕПОЛНЫЕ").
  */
 
 export const NORM = {
-  windowDays: 30,
-  rareWindowDays: 60,
-  /** FACT days needed to use them as the sample */
-  minFactDays: 7,
-  /** fewer sample days → no norm ("не хватает данных") */
-  minSampleDays: 5,
+  /** complete deliveries used for the norm */
+  recentBatches: 8,
+  /** fewer complete deliveries → no norm */
+  minBatches: 3,
+  /** +1 when this many last deliveries sold out */
+  soldOutRun: 3,
+  /** "постоянно остаётся 2+ и списывается" (shown in "почему") */
+  leftoverUnits: 2,
+  leftoverShare: 0.6,
   minHistoryDays: 14,
-  lossShare: 0.3,
-  minLoaded: 5,
-  soldOutShare: 0.25,
-  rareShare: 0.3,
   newDays: 21,
 } as const;
 
@@ -40,44 +39,58 @@ export type DataQuality = "GOOD" | "INCOMPLETE" | "BAD";
 
 export const STATUS_TEXT: Record<ProductStatus, string> = {
   NORMAL: "НОРМА",
-  MORE: "НУЖНО БОЛЬШЕ",
+  MORE: "СТАВИТЬ БОЛЬШЕ",
   TOO_MUCH: "СЛИШКОМ МНОГО",
   LESS: "СТАВИТЬ МЕНЬШЕ",
   RARE: "РЕДКИЙ СПРОС",
-  NO_DATA: "НЕ ХВАТАЕТ ДАННЫХ",
+  NO_DATA: "НЕДОСТАТОЧНО ДАННЫХ",
   UNUSED: "НЕ ИСПОЛЬЗУЕТСЯ",
 };
 export const QUALITY_TEXT: Record<DataQuality, string> = { GOOD: "ХОРОШИЕ", INCOMPLETE: "НЕПОЛНЫЕ", BAD: "ДАННЫЕ НЕПОЛНЫЕ ❌" };
 export const CONFIDENCE_TEXT: Record<Confidence, string> = { HIGH: "ВЫСОКАЯ", MEDIUM: "СРЕДНЯЯ", LOW: "НИЗКАЯ" };
 
+type Range = { low: number; high: number };
+
 export interface ProductStat {
   f: number;
   p: number;
-  /** units sold (whole) */
   sold: { d7: number; d30: number; d60: number; d90: number; d180: number };
   soldToday: number;
   historyDays: number;
   firstDay: number | null;
-  /** fridge open days in the last 30 and days with a sale of this dish */
   openDays30: number;
   salesDays30: number;
-  /** units on a sample day: usual range and a strong day */
-  usual: { low: number; high: number } | null;
-  strongDay: number | null;
-  /** which days the norm is built on */
-  basis: "FACT" | "SALES_DAYS" | null;
-  sampleDays: number;
-  /** KiT Shop operations, 30 days, whole units */
   loaded30: number;
   removed30: number;
   writtenOff30: number;
   stock: number;
-  /** FACT: from the 5-minute stock history (30 days) */
-  fact: { days: number; inStock: number; out: number; ranOut: number };
-  /** ESTIMATE: from the reconstruction, only days WITHOUT facts; null = not available */
-  estimate: { days: number; inStock: number; out: number; ranOut: number } | null;
+  shelfHours: number;
+  shelfSource: "product" | "category";
+  /** all complete deliveries since the data are complete */
+  batches: {
+    count: number;
+    open: number;
+    loaded: number;
+    sold: number;
+    unloaded: number;
+    writtenOff: number;
+    left: number;
+    /** 0..1, null = no complete delivery */
+    sellThrough: number | null;
+    usualLoaded: Range | null;
+    usualSold: Range | null;
+    usualLeft: Range | null;
+    since: number | null;
+  };
+  /** the last deliveries, newest first (complete and not yet) */
+  recent: Batch[];
+  /** units in the fridge now by age (hours), expired ones apart */
+  ages: { from: number; to: number; qty: number }[];
+  expiredNow: number;
+  movementConsistent: boolean;
+  /** today's delivery: the target, what is still fresh, how many to bring */
+  plan: { target: number; fresh: number; delivery: number } | null;
   norm: { min: number; rec: number; max: number } | null;
-  /** one line: "Ставить 2 шт." / "Не держать ежедневно — низкий спрос" / "Недостаточно данных" */
   recommendation: string;
   why: string[];
   status: ProductStatus;
@@ -87,25 +100,22 @@ export interface ProductStat {
   confidence: Confidence;
   confidenceReason: string;
   isNew: boolean;
-  /** within the fridge by units sold in 30 days */
   demand: "HIGH" | "NORMAL" | "LOW" | null;
-  /** sold in 30 days vs the 30 before, % (only with 60 days of history) */
   sales30VsPrevPct: number | null;
 }
 
 export interface ProductStats {
-  /** F*P, undefined = the dish has nothing to do with this fridge */
   at: (ProductStat | undefined)[];
   byFridge: ProductStat[][];
 }
 
 const cache = new WeakMap<EngineContext, ProductStats>();
-const DAY = 86_400_000;
-const ddmm = (day: number) => {
-  const d = new Date(day * DAY);
+const units = (n: number) => `${n} шт.`;
+const rng = (r: Range) => (r.low === r.high ? units(r.low) : `${r.low}–${r.high} шт.`);
+const ddmm = (ms: number) => {
+  const d = new Date(ms);
   return `${String(d.getUTCDate()).padStart(2, "0")}.${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
 };
-const units = (n: number) => `${n} шт.`;
 
 /** Nearest-rank quantile of whole numbers (always one of the values). */
 export function quantile(sorted: number[], q: number): number {
@@ -113,15 +123,21 @@ export function quantile(sorted: number[], q: number): number {
   return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(q * sorted.length) - 1))];
 }
 
-export function productStats(ctx: EngineContext): ProductStats {
+const usual = (xs: number[]): Range | null => {
+  if (!xs.length) return null;
+  const s = [...xs].sort((a, b) => a - b);
+  return { low: quantile(s, 0.25), high: quantile(s, 0.75) };
+};
+
+export function productStats(ctx: EngineContext, shelfLife?: ShelfLifeSettings): ProductStats {
   const hit = cache.get(ctx);
   if (hit) return hit;
   const { F, P, D, snap } = ctx;
   const pd = snap.productDays;
   const daily = snap.history.productDaily;
   const today = ctx.today;
+  const now = snap.now;
   const historyStart = snap.historyFromDay ?? snap.history.startDay;
-  const fillupsKnown30 = pd ? pd.fillupsFromDay !== null && pd.fillupsFromDay <= today - NORM.windowDays : false;
 
   const at: (ProductStat | undefined)[] = new Array(F * P);
   const byFridge: ProductStat[][] = snap.fridges.map(() => []);
@@ -129,19 +145,18 @@ export function productStats(ctx: EngineContext): ProductStats {
   for (let f = 0; f < F; f++) {
     const checks = pd?.checks[f] ?? [];
     const failed = checks.filter((c) => c.level === "FAIL");
-    const stockHistoryFrom = (() => {
-      const c = checks.find((x) => x.id === "stock-history");
-      return c && c.level !== "OK" ? c.detail : null;
-    })();
+    const gapDays = new Set((pd?.continuity[f] ?? []).filter((d) => d.status === "GAP").map((d) => d.day));
     for (let p = 0; p < P; p++) {
       const base = (f * P + p) * D;
       const stock = snap.stock[f * P + p];
       const soldToday = Math.round(snap.today.productSales[f * P + p]);
+      const pr = snap.products[p];
       let first = pd && pd.firstDay[f * P + p] >= 0 ? pd.firstDay[f * P + p] : -1;
       if (first < 0) for (let d = 0; d < D; d++) if (daily[base + d] > 0) { first = histDay(ctx, d); break; }
       if (first < 0 && soldToday > 0) first = today;
       if (first < 0 && stock <= 0) continue;
 
+      // facts: sales by windows, loads / unloads / write-offs in 30 days
       const sold = { d7: 0, d30: 0, d60: 0, d90: 0, d180: 0 };
       let soldPrev30 = 0;
       let openDays30 = 0;
@@ -149,14 +164,8 @@ export function productStats(ctx: EngineContext): ProductStats {
       let loaded30 = 0;
       let removed30 = 0;
       let writtenOff30 = 0;
-      const fact = { days: 0, inStock: 0, out: 0, ranOut: 0 };
-      const est = { days: 0, inStock: 0, out: 0, ranOut: 0 };
-      const factSample: number[] = [];
-      const salesSample30: number[] = [];
-      const salesSample60: number[] = [];
       for (let d = 0; d < D; d++) {
-        const day = histDay(ctx, d);
-        const age = today - day;
+        const age = today - histDay(ctx, d);
         if (age < 1 || age > 180) continue;
         const q = Math.round(daily[base + d]);
         if (age <= 7) sold.d7 += q;
@@ -165,35 +174,15 @@ export function productStats(ctx: EngineContext): ProductStats {
         if (age <= 90) sold.d90 += q;
         sold.d180 += q;
         if (age > 30 && age <= 60) soldPrev30 += q;
-        if (pd && age <= 30) {
-          loaded30 += pd.loaded[base + d];
-          removed30 += pd.removed[base + d];
-          writtenOff30 += pd.writtenOff[base + d];
-        }
-        if (!ctx.sample[f * D + d] || day < first) continue;
-        if (age <= 60 && q > 0) salesSample60.push(q);
-        if (age > 30) continue;
-        openDays30++;
-        if (q > 0) {
-          salesDays30++;
-          salesSample30.push(q);
-        }
-        if (!pd) continue;
-        const af = pd.availFact[base + d];
-        if (!Number.isNaN(af)) {
-          fact.days++;
-          if (af >= 0.5) {
-            fact.inStock++;
-            factSample.push(q);
-          } else fact.out++;
-          fact.ranOut += pd.ranOutFact[base + d];
-        } else {
-          const ae = pd.avail[base + d];
-          if (!Number.isNaN(ae)) {
-            est.days++;
-            if (ae >= 0.5) est.inStock++;
-            else est.out++;
-            est.ranOut += pd.ranOut[base + d];
+        if (age <= 30) {
+          if (pd) {
+            loaded30 += pd.loaded[base + d];
+            removed30 += pd.removed[base + d];
+            writtenOff30 += pd.writtenOff[base + d];
+          }
+          if (ctx.sample[f * D + d] && histDay(ctx, d) >= first) {
+            openDays30++;
+            if (q > 0) salesDays30++;
           }
         }
       }
@@ -202,97 +191,116 @@ export function productStats(ctx: EngineContext): ProductStats {
       writtenOff30 = Math.round(writtenOff30);
       const historyDays = Math.max(0, today - Math.max(first, historyStart));
       const isNew = first >= historyStart + NORM.minHistoryDays && today - first <= NORM.newDays;
+      const shelf = shelfHoursFor(shelfLife, pr.id, pr.categoryId);
 
-      // ── sample days
-      let basis: ProductStat["basis"] = null;
-      let sample: number[] = [];
-      if (fact.inStock >= NORM.minFactDays) {
-        basis = "FACT";
-        sample = factSample;
-      } else if (salesSample30.length >= NORM.minSampleDays) {
-        basis = "SALES_DAYS";
-        sample = salesSample30;
-      } else if (salesSample60.length >= NORM.minSampleDays && historyDays >= 45) {
-        basis = "SALES_DAYS";
-        sample = salesSample60;
-      }
-      const sorted = [...sample].sort((a, b) => a - b);
-      const sold30Days = sorted.length ? sorted : [...salesSample30].sort((a, b) => a - b);
-      const usual = sold30Days.length ? { low: quantile(sold30Days, 0.25), high: quantile(sold30Days, 0.75) } : null;
-      const strongDay = sold30Days.length ? quantile(sold30Days, 0.9) : null;
+      // ── deliveries
+      const br = pd
+        ? analyseBatches({ events: pd.events[f * P + p], from: pd.eventsFrom, now, currentStock: stock, shelfHours: shelf.hours, gapDays })
+        : { batches: [], ages: [], expiredNow: 0, startStock: 0, consistent: true, replayStock: stock, unattributed: 0 };
+      const complete = br.batches.filter((b) => b.complete);
+      const recentComplete = complete.slice(-NORM.recentBatches);
+      const sumB = (k: (b: Batch) => number) => complete.reduce((a, b) => a + k(b), 0);
+      const totalLoaded = Math.round(sumB((b) => b.loaded));
+      const totalSold = Math.round(sumB((b) => b.soldInShelf));
+      const batches: ProductStat["batches"] = {
+        count: complete.length,
+        open: br.batches.length - complete.length,
+        loaded: totalLoaded,
+        sold: totalSold,
+        unloaded: Math.round(sumB((b) => b.unloaded)),
+        writtenOff: Math.round(sumB((b) => b.writtenOff)),
+        left: Math.round(sumB((b) => b.leftAtExpiry ?? 0)),
+        sellThrough: totalLoaded > 0 ? totalSold / totalLoaded : null,
+        usualLoaded: usual(recentComplete.map((b) => Math.round(b.loaded))),
+        usualSold: usual(recentComplete.map((b) => Math.round(b.soldInShelf))),
+        usualLeft: usual(recentComplete.map((b) => Math.round(b.leftAtExpiry ?? 0))),
+        since: complete.length ? complete[0].at : null,
+      };
+      const fresh = Math.max(0, stock - br.expiredNow);
 
       const why: string[] = [];
-      why.push(`за 30 дней продано ${units(sold.d30)}${openDays30 ? `, покупали в ${salesDays30} днях из ${openDays30}` : ""}`);
       let norm: ProductStat["norm"] = null;
       let status: ProductStatus = "NORMAL";
       let statusReason = "количество подходит";
       let recommendation = "";
 
-      const rare = openDays30 >= 10 && salesDays30 <= NORM.rareShare * openDays30;
       if (sold.d30 === 0 && loaded30 === 0 && stock <= 0 && soldToday === 0) {
         status = "UNUSED";
         statusReason = "30 дней нет ни продаж, ни загрузок";
         recommendation = "Не используется";
-      } else if (historyDays < NORM.minHistoryDays || (!rare && sorted.length < NORM.minSampleDays)) {
-        status = "NO_DATA";
-        statusReason = isNew ? `новое блюдо: история ${historyDays} дн.` : `мало данных: история ${historyDays} дн., дней для расчёта ${sorted.length}`;
-        recommendation = "Недостаточно данных для нормы";
-        if (usual) why.push(`предварительно: в день с продажами ${usual.low === usual.high ? units(usual.low) : `${usual.low}–${usual.high} шт.`}`);
-      } else if (rare) {
-        status = "RARE";
-        const confirmed = fact.inStock >= NORM.minFactDays && salesDays30 <= NORM.rareShare * fact.inStock;
-        const perSalesDay = usual ? (usual.low === usual.high ? units(usual.low) : `${usual.low}–${usual.high} шт.`) : "1 шт.";
-        why.push(`обычно ${perSalesDay} за день, когда покупают`);
-        if (confirmed) {
-          norm = { min: 0, rec: 0, max: 1 };
-          statusReason = `стоял ${fact.inStock} дн. (по истории остатков), покупали только в ${salesDays30}`;
-          recommendation = "Не держать ежедневно — низкий спрос";
-          why.push(`по истории остатков блюдо было в наличии ${fact.inStock} дн., а покупали в ${salesDays30}`);
+      } else if (!pd) {
+        // SIMULATOR only (no KiT Shop movements exist): days with sales stand in for deliveries, clearly marked
+        const days: number[] = [];
+        for (let d = 0; d < D; d++) {
+          const age = today - histDay(ctx, d);
+          const q = Math.round(daily[base + d]);
+          if (age >= 1 && age <= 30 && q > 0) days.push(q);
+        }
+        days.sort((a, b) => a - b);
+        if (days.length >= NORM.minBatches) {
+          const rec = Math.max(1, quantile(days, 0.5));
+          norm = { min: Math.min(rec, Math.max(1, quantile(days, 0.25))), rec, max: Math.max(rec, quantile(days, 0.75)) };
+          recommendation = `Ставить ${units(rec)} (симулятор)`;
+          why.push("режим симулятора: поставок KiT Shop нет, дни с продажами вместо поставок");
         } else {
-          norm = { min: 1, rec: 1, max: Math.max(1, strongDay ?? 1) };
-          statusReason = `покупают редко: в ${salesDays30} днях из ${openDays30}`;
-          recommendation = "Ставить 1 шт.";
-          why.push("было ли блюдо в наличии в остальные дни — точно неизвестно, поэтому 1 шт.");
+          status = "NO_DATA";
+          statusReason = "мало данных (режим симулятора)";
+          recommendation = "Недостаточно данных";
+        }
+      } else if (recentComplete.length < NORM.minBatches) {
+        status = "NO_DATA";
+        statusReason = `завершённых поставок ${recentComplete.length} (нужно хотя бы ${NORM.minBatches})`;
+        recommendation = "Недостаточно данных: мало поставок";
+        if (br.batches.length) {
+          const last = br.batches[br.batches.length - 1];
+          why.push(`последняя поставка ${ddmm(last.at)}: поставили ${units(Math.round(last.loaded))}, продано ${units(Math.round(last.soldInShelf))}`);
         }
       } else {
-        const p25 = quantile(sorted, 0.25);
-        const p50 = quantile(sorted, 0.5);
-        const p75 = quantile(sorted, 0.75);
-        const p90 = quantile(sorted, 0.9);
-        let rec = Math.max(1, p75);
-        const min = Math.min(rec, Math.max(1, p25));
-        let max = Math.max(rec, p90);
-        why.push(
-          basis === "FACT"
-            ? `в дни, когда блюдо было (по истории остатков, ${sorted.length} дн.), обычно уходило ${p25 === p75 ? units(p25) : `${p25}–${p75} шт.`}, в сильные дни ${units(p90)}`
-            : `в дни с продажами обычно уходило ${p25 === p75 ? units(p25) : `${p25}–${p75} шт.`}, в сильные дни ${units(p90)}`,
-        );
-        const lossBase = loaded30;
-        const lost = removed30 + writtenOff30;
-        const soldOut = basis === "FACT" && fact.inStock >= NORM.minFactDays && fact.ranOut >= NORM.soldOutShare * fact.days;
-        if (fillupsKnown30 && lossBase >= NORM.minLoaded && lost >= NORM.lossShare * lossBase) {
-          rec = Math.max(min, p50);
-          status = "LESS";
-          statusReason = `из ${units(lossBase)} загруженных снято ${removed30} и списано ${writtenOff30}`;
-          why.push(`загружено ${units(lossBase)}, снято ${units(removed30)}, списано ${units(writtenOff30)} — лишнее остаётся, норма по обычному дню`);
-        } else if (soldOut) {
-          rec = Math.min(rec + 1, max + 1);
-          max = Math.max(max, rec);
-          status = "MORE";
-          statusReason = `закончился ${fact.ranOut} раз за ${fact.days} дн. (история остатков)`;
-          why.push(`по истории остатков закончился ${fact.ranOut} раз — +1 шт.`);
-        } else if (fillupsKnown30 && lossBase >= NORM.minLoaded) {
-          why.push(`загружено ${units(lossBase)}, снято ${units(removed30)}, списано ${units(writtenOff30)}`);
+        const soldS = recentComplete.map((b) => Math.round(b.soldInShelf)).sort((a, b) => a - b);
+        const loadedS = recentComplete.map((b) => Math.round(b.loaded)).sort((a, b) => a - b);
+        const loadedMed = quantile(loadedS, 0.5);
+        let rec = quantile(soldS, 0.5);
+        why.push(`за срок годности ${shelf.hours} ч: ${recentComplete.length} последних поставок — обычно ставили ${rng(batches.usualLoaded!)}, продавалось ${rng(batches.usualSold!)}, оставалось ${rng(batches.usualLeft!)}`);
+        if (rec === 0) {
+          norm = { min: 0, rec: 0, max: 1 };
+          status = "RARE";
+          statusReason = "за срок годности почти ничего не продаётся";
+          recommendation = "Не держать ежедневно — почти не продаётся";
+        } else {
+          let low = Math.max(1, quantile(soldS, 0.25));
+          let high = Math.max(rec, Math.min(loadedMed, quantile(soldS, 0.75) + 1));
+          const lastRun = recentComplete.slice(-NORM.soldOutRun);
+          if (lastRun.length === NORM.soldOutRun && lastRun.every((b) => b.soldOut)) {
+            rec += 1;
+            high = Math.max(high, rec);
+            why.push(`последние ${NORM.soldOutRun} поставки ушли полностью — +1 шт.`);
+          } else {
+            // "ставить" is what sold, not what was loaded: deliveries that kept leaving 2+ for write-off are already cut
+            const wasteful = recentComplete.filter((b) => (b.leftAtExpiry ?? 0) >= NORM.leftoverUnits && b.writtenOff > 0);
+            if (wasteful.length >= NORM.leftoverShare * recentComplete.length)
+              why.push(`в ${wasteful.length} из ${recentComplete.length} поставок оставалось 2+ и списывалось — ставить меньше, чем ставили (${units(loadedMed)} → ${units(rec)})`);
+          }
+          low = Math.min(low, rec);
+          norm = { min: low, rec, max: high };
+          recommendation = `Ставить ${units(rec)}`;
+          if (rec > loadedMed) {
+            status = "MORE";
+            statusReason = `обычно ставили ${units(loadedMed)}, нужно ${units(rec)}`;
+          } else if (rec < loadedMed) {
+            status = "LESS";
+            statusReason = `обычно ставили ${units(loadedMed)}, продаётся ${units(rec)}`;
+          }
+          if (fresh >= high + 2) {
+            status = "TOO_MUCH";
+            statusReason = `сейчас годных ${units(fresh)}, а за срок обычно уходит до ${units(high)}`;
+          }
         }
-        norm = { min, rec, max };
-        recommendation = `Ставить ${units(rec)}`;
-        if (status === "NORMAL" && ((sold.d30 === 0 && stock > 0) || stock >= max + 3)) {
-          status = "TOO_MUCH";
-          statusReason = sold.d30 === 0 ? `30 дней без продаж, а в холодильнике ${units(stock)}` : `сейчас ${units(stock)}, а больше ${units(max)} в день не уходит`;
-        }
+        if (batches.sellThrough !== null) why.push(`реализация с ${ddmm(batches.since!)}: продано ${totalSold} из ${totalLoaded} (${Math.round(batches.sellThrough * 100)}%), снято ${units(batches.unloaded)}, списано ${units(batches.writtenOff)}`);
       }
-      if (!fillupsKnown30 && status !== "UNUSED") why.push("загрузки/снятия за 30 дней ещё не полные");
-      // a failed data check (e.g. KiT Shop time / new receipts): no norm at all until it passes — nothing to trust
+      if (!br.consistent) why.push("движение товара в KiT Shop не сходится с остатком — начальный остаток неизвестен");
+      if (br.expiredNow > 0) why.push(`в холодильнике ${units(br.expiredNow)} старше ${shelf.hours} ч — снять`);
+
+      // a failed data check: nothing to trust
       if (failed.length && status !== "UNUSED") {
         norm = null;
         status = "NO_DATA";
@@ -300,23 +308,16 @@ export function productStats(ctx: EngineContext): ProductStats {
         recommendation = "ДАННЫЕ НЕПОЛНЫЕ — нормы нет, пока не пройдена проверка данных";
       }
 
-      // ── data quality
+      const fillupsKnown = pd ? pd.fillupsFromDay !== null && pd.fillupsFromDay <= today - 30 : false;
       const incomplete: string[] = [];
-      if (stockHistoryFrom) incomplete.push(`точная история остатков: ${stockHistoryFrom}`);
-      if (historyDays < 30) incomplete.push(`история продаж ${historyDays} дн.`);
-      if (!fillupsKnown30) incomplete.push("загрузки/снятия за 30 дней неполные");
+      if (!fillupsKnown) incomplete.push("загрузки/снятия за 30 дней неполные");
+      if (!br.consistent) incomplete.push("движение не сходится с остатком");
+      if (gapDays.size) incomplete.push(`в истории дыры (${gapDays.size} дн.)`);
+      if (recentComplete.length < 6 && status !== "UNUSED") incomplete.push(recentComplete.length ? `всего ${recentComplete.length} завершённых поставок` : "поставок (загрузок KiT Shop) нет");
       const quality: DataQuality = failed.length ? "BAD" : incomplete.length ? "INCOMPLETE" : "GOOD";
-      const qualityReason = failed.length ? `проверка не пройдена: ${failed.map((c) => c.label.toLowerCase()).join(", ")}` : incomplete.length ? incomplete.join("; ") : "продажи, загрузки и история остатков полные";
-      const confidence: Confidence =
-        quality === "GOOD" && sorted.length >= 15 ? "HIGH" : quality !== "BAD" && sorted.length >= 8 && historyDays >= 30 ? "MEDIUM" : "LOW";
-      const confidenceReason =
-        quality === "BAD"
-          ? qualityReason
-          : basis !== "FACT" && norm
-            ? `наличие по дням не подтверждено историей остатков${stockHistoryFrom ? ` (${stockHistoryFrom})` : ""} — считаем только дни с продажами`
-            : sorted.length < 8
-              ? `мало дней для расчёта (${sorted.length})`
-              : incomplete[0] ?? "данных достаточно";
+      const qualityReason = failed.length ? `проверка не пройдена: ${failed.map((c) => c.label.toLowerCase()).join(", ")}` : incomplete.length ? incomplete.join("; ") : "продажи, загрузки, снятия и списания полные";
+      const confidence: Confidence = quality === "GOOD" && recentComplete.length >= 6 ? "HIGH" : quality !== "BAD" && recentComplete.length >= NORM.minBatches ? "MEDIUM" : "LOW";
+      const confidenceReason = quality === "BAD" ? qualityReason : recentComplete.length < NORM.minBatches ? `завершённых поставок ${recentComplete.length}` : incomplete[0] ?? `${recentComplete.length} полных поставок`;
 
       const st: ProductStat = {
         f,
@@ -327,16 +328,28 @@ export function productStats(ctx: EngineContext): ProductStats {
         firstDay: first,
         openDays30,
         salesDays30,
-        usual,
-        strongDay,
-        basis,
-        sampleDays: sorted.length,
         loaded30,
         removed30,
         writtenOff30,
         stock,
-        fact,
-        estimate: est.days ? est : null,
+        shelfHours: shelf.hours,
+        shelfSource: shelf.source,
+        batches,
+        recent: [...br.batches].slice(-NORM.recentBatches).reverse().map((b) => ({
+          ...b,
+          loaded: Math.round(b.loaded),
+          before: Math.round(b.before),
+          sold24: Math.round(b.sold24),
+          soldInShelf: Math.round(b.soldInShelf),
+          soldAfter: Math.round(b.soldAfter),
+          unloaded: Math.round(b.unloaded),
+          writtenOff: Math.round(b.writtenOff),
+          leftAtExpiry: b.leftAtExpiry === null ? null : Math.round(b.leftAtExpiry),
+        })),
+        ages: br.ages.map((a) => ({ ...a, qty: Math.round(a.qty) })),
+        expiredNow: Math.round(br.expiredNow),
+        movementConsistent: br.consistent,
+        plan: norm ? { target: norm.rec, fresh, delivery: Math.max(0, norm.rec - fresh) } : null,
         norm,
         recommendation,
         why,
@@ -355,7 +368,6 @@ export function productStats(ctx: EngineContext): ProductStats {
     }
   }
 
-  // high / low demand inside the fridge: quartiles of units sold in 30 days
   for (const rows of byFridge) {
     const ranked = rows.filter((x) => x.sold.d30 > 0 && x.status !== "NO_DATA").sort((a, b) => b.sold.d30 - a.sold.d30);
     const q = Math.max(1, Math.floor(ranked.length / 4));

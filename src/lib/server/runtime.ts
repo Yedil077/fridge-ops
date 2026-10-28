@@ -1,5 +1,6 @@
 import "server-only";
 import { ENGINE_CONFIG } from "../config/engine";
+import { emptyShelfLife, type ShelfLifeSettings } from "../config/shelfLife";
 import { FORECAST_MODE_IDS, type ForecastMode, type Mission, type NetworkSnapshot } from "../domain/types";
 import { DEFAULT_UNTIL_MINUTE, horizonWindow } from "../engine/recommend";
 import { analyze, type AnalysisResult } from "../engine/analysis";
@@ -331,10 +332,11 @@ class Runtime {
   private analysisFor(snap: NetworkSnapshot, mode: ForecastMode = "realtime"): AnalysisResult {
     const active = this.activeMissions();
     const until = this.untilMinute();
-    const key = `${snap.version}|${until}|${JSON.stringify(this.state.learning).length}|${active.map((m) => m.id + m.status).join(",")}`;
+    const shelfLife = this.state.shelfLife ?? emptyShelfLife();
+    const key = `${snap.version}|${until}|${JSON.stringify(shelfLife)}|${JSON.stringify(this.state.learning).length}|${active.map((m) => m.id + m.status).join(",")}`;
     const hit = this.cache.get(mode);
     if (hit?.key === key) return hit.result;
-    const result = analyze(snap, this.state.learning, active, mode, until);
+    const result = analyze(snap, this.state.learning, active, mode, until, { shelfLife });
     this.cache.set(mode, { key, result });
     return result;
   }
@@ -351,6 +353,16 @@ class Runtime {
 
   untilTime(): string {
     return fmtHM(this.untilMinute());
+  }
+
+  shelfLife(): ShelfLifeSettings {
+    return this.state.shelfLife ?? emptyShelfLife();
+  }
+
+  setShelfLife(next: ShelfLifeSettings) {
+    this.state.shelfLife = next;
+    this.cache.clear();
+    this.save();
   }
 
   setUntilMinute(minute: number) {
