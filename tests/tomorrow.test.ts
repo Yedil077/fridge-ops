@@ -77,16 +77,18 @@ test("the norm minus what is still fresh tomorrow morning; whole units; why", ()
   assert.equal(c.qty, 6 - c.expectedLeft);
   assert.ok(Number.isInteger(c.qty));
   assert.deepEqual(c.reason.today, { loaded: 7, soldSoFar: 5 }, "TODAY: 5 of 7 already sold");
-  assert.ok(c.reason.deliveries.every((d) => d === "7 → 6"));
+  assert.ok(c.reason.deliveries.length >= 3 && c.reason.deliveries.every((d) => d.loaded === 7 && d.sold === 6 && d.writtenOff === 1));
+  assert.equal(c.basis, "ЭТА ТОЧКА");
   assert.equal(c.reason.writeOff, "среднее", "1 of 7 (14%) written off every time");
 });
 
-test("a fridge that never had the dish gets the network benchmark — НОВЫЙ, low confidence", () => {
+test("a fridge that never had the dish: the same dish in its transfer group first (SATTI) — НОВЫЙ, low confidence", () => {
   const { cell } = plan(["K1"]);
   const c = cell(S2, "K1");
   assert.equal(c.tag, "НОВЫЙ");
+  assert.equal(c.basis, "ГРУППА", "SATTI 1 and SATTI A2 are in one transfer group");
   assert.equal(c.confidence, "LOW");
-  assert.equal(c.qty, 6, "the norm of the other fridges");
+  assert.equal(c.qty, 6, "the norm of the same dish in the group");
 });
 
 test("no data anywhere → '?' (no invented number)", () => {

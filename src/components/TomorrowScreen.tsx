@@ -232,14 +232,51 @@ function CellCard({ c, view, canEdit, onClose, mobile }: { c: Cell; view: Tomorr
         </section>
         <section className="card mt-3 p-4 text-[13px]">
           <div className="label mb-1">Почему</div>
-          {c.reason.deliveries.length > 0 && (
-            <div className="mb-1">
-              последние поставки (поставили → продано за срок): <b>{c.reason.deliveries.join(", ")}</b>
+          {c.reason.deliveries.length > 0 ? (
+            <div className="mb-2 overflow-x-auto">
+              <table className="w-full text-[12px] [&_td]:px-1.5 [&_th]:px-1.5">
+                <thead className="text-left text-ink-3">
+                  <tr className="border-b border-line">
+                    <th className="py-1">Поставка</th>
+                    <th className="text-right">Поставили</th>
+                    <th className="text-right">Продано</th>
+                    <th className="text-right">Снято</th>
+                    <th className="text-right">Списано</th>
+                    <th className="text-right">Осталось</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {c.reason.deliveries.map((d) => (
+                    <tr key={d.at} className="border-b border-line last:border-0">
+                      <td className="py-1 whitespace-nowrap">
+                        {hhmm(d.at)}
+                        {d.soldOut ? " · ушло всё" : ""}
+                      </td>
+                      <td className="num text-right font-semibold">{d.loaded}</td>
+                      <td className="num text-right font-semibold">{d.sold}</td>
+                      <td className="num text-right">{d.unloaded}</td>
+                      <td className={clsx("num text-right", d.writtenOff > 0 && "text-crit-ink")}>{d.writtenOff}</td>
+                      <td className="num text-right">{d.left ?? "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div className="mt-1 text-[11px] text-ink-3">
+                «Продано» — за срок годности; ушло полностью: {c.reason.soldOutCount} из {c.reason.deliveries.length}
+              </div>
+            </div>
+          ) : (
+            <div className="mb-1 text-ink-3">в этом холодильнике поставок этого блюда не было</div>
+          )}
+          {c.basis && <div>основа: {c.basis === "ЭТА ТОЧКА" ? "история этого блюда в этом холодильнике" : c.basis === "ГРУППА" ? "это блюдо в холодильниках той же группы" : "это блюдо по всей сети"}</div>}
+          <div>списание: {c.reason.writeOff}</div>
+          {c.base !== null && <div>норма поставки: {c.base} шт.</div>}
+          <div>ожидаемый годный остаток завтра утром: {c.expectedLeft} шт.</div>
+          {c.qty !== null && c.base !== null && (
+            <div className="font-semibold">
+              итог: {c.base} − {c.expectedLeft} = {c.qty} шт.
             </div>
           )}
-          <div>списание: {c.reason.writeOff}</div>
-          <div>ожидаемый годный остаток утром: {c.expectedLeft} шт.</div>
-          {c.base !== null && <div>норма поставки: {c.base} шт.</div>}
           {c.reason.today && (
             <div>
               сегодня: поставили {c.reason.today.loaded}, уже продано {c.reason.today.soldSoFar}

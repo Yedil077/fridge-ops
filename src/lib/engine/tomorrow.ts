@@ -11,7 +11,8 @@ import { dayNumber, weekdayOf } from "../time";
  *   base   = the fridge's norm for this dish (engine/productNorm.ts: what sells within the shelf life over the last
  *            deliveries; +1 when the last 3 sold out — "проверить больше"; less when the leftovers keep being written off)
  *            · only 1–2 deliveries known → what they sold, LOW confidence
- *            · never at this fridge → the network benchmark (the median norm of the other fridges), LOW, "НОВЫЙ"
+ *            · never at this fridge → the same dish in the fridges of its transfer group (median norm), then in the
+ *              whole network; LOW, "НОВЫЙ" — never a category average
  *            · nothing anywhere → "?" (no invented number)
  *   left   = what will still be FRESH tomorrow morning: today's units minus what sells for the rest of today (the oldest
  *            go first), without the units whose shelf life ends by then
@@ -21,6 +22,16 @@ import { dayNumber, weekdayOf } from "../time";
 export const TOMORROW_DELIVERY_HOUR = 7;
 const H = 3_600_000;
 const DAY = 24 * H;
+
+export interface DeliveryLine {
+  at: number;
+  loaded: number;
+  sold: number;
+  unloaded: number;
+  writtenOff: number;
+  left: number | null;
+  soldOut: boolean;
+}
 
 export interface TomorrowCell {
   shopId: string;
@@ -32,8 +43,12 @@ export interface TomorrowCell {
   expectedLeft: number;
   confidence: "HIGH" | "MEDIUM" | "LOW";
   tag: "НОВЫЙ" | "МАЛО ДАННЫХ" | "НЕ РАБОТАЕТ" | null;
+  /** where the base came from */
+  basis: "ЭТА ТОЧКА" | "ГРУППА" | "СЕТЬ" | null;
   reason: {
-    deliveries: string[];
+    deliveries: DeliveryLine[];
+    /** how many of the deliveries sold out completely */
+    soldOutCount: number;
     writeOff: "низкое" | "среднее" | "высокое" | "нет данных";
     notes: string[];
     today: { loaded: number; soldSoFar: number } | null;
@@ -61,9 +76,12 @@ export function computeTomorrow(input: {
 
   for (const pid of input.menu) {
     const p = pIdx.get(pid);
-    // the norms of the other fridges — the benchmark for a fridge that never had the dish
-    const norms = p === undefined ? [] : snap.fridges.map((_, f) => stats.at[f * P + p]?.norm?.rec ?? snap.productDays?.stats[f * P + p]?.norm?.rec).filter((x): x is number => typeof x === "number" && x > 0).sort((a, b) => a - b);
-    const benchmark = norms.length ? quantile(norms, 0.5) : null;
+    // the norms of the same dish in other fridges — for a fridge that never had it: its transfer group first, then the network
+    const normOf = (f: number) => (p === undefined ? undefined : stats.at[f * P + p]?.norm?.rec ?? snap.productDays?.stats[f * P + p]?.norm?.rec);
+    const median = (fs: number[]) => {
+      const xs = fs.map(normOf).filter((x): x is number => typeof x === "number" && x > 0).sort((a, b) => a - b);
+      return xs.length ? { value: quantile(xs, 0.5), n: xs.length } : null;
+    };
 
     snap.fridges.forEach((fr, f) => {
       const notes: string[] = [];
@@ -76,7 +94,8 @@ export function computeTomorrow(input: {
         expectedLeft: 0,
         confidence: "LOW",
         tag: null,
-        reason: { deliveries: [], writeOff: "нет данных", notes, today: null },
+        basis: null,
+        reason: { deliveries: [], soldOutCount: 0, writeOff: "нет данных", notes, today: null },
       };
       out.push(cell);
 
@@ -95,7 +114,8 @@ export function computeTomorrow(input: {
       const st = p === undefined ? undefined : stats.at[f * P + p];
       const stored = p === undefined ? undefined : snap.productDays?.stats[f * P + p];
       const done = (st?.recent ?? stored?.recent ?? []).filter((b) => b.complete);
-      cell.reason.deliveries = done.slice(0, 5).map((b) => `${b.loaded} → ${b.soldInShelf}`);
+      cell.reason.deliveries = done.slice(0, 8).map((b) => ({ at: b.at, loaded: b.loaded, sold: b.soldInShelf, unloaded: b.unloaded, writtenOff: b.writtenOff, left: b.leftAtExpiry, soldOut: b.soldOut }));
+      cell.reason.soldOutCount = done.filter((b) => b.soldOut).length;
       const batches = st?.batches ?? stored?.batches;
       if (batches && batches.loaded > 0) {
         const w = batches.writtenOff / batches.loaded;
@@ -105,23 +125,33 @@ export function computeTomorrow(input: {
 
       // the base number
       const norm = st?.norm ?? stored?.norm ?? null;
+      const group = fr.transferGroup ? median(snap.fridges.map((x, i) => (i !== f && x.transferGroup === fr.transferGroup ? i : -1)).filter((i) => i >= 0)) : null;
+      const network = median(snap.fridges.map((_, i) => i).filter((i) => i !== f));
       if (norm) {
+        cell.basis = "ЭТА ТОЧКА";
         cell.base = norm.rec;
         cell.range = { min: norm.min, max: norm.max };
         cell.confidence = st?.norm ? st.confidence : "LOW";
         if (!st?.norm) notes.push(`проверка данных не пройдена (${st?.statusReason ?? "нет данных"}) — число по последним поставкам, НИЗКАЯ уверенность`);
       } else if (done.length) {
         const sold = done.map((b) => b.soldInShelf).sort((a, b) => a - b);
-        cell.base = Math.max(1, quantile(sold, 0.5));
+        cell.base = Math.max(1, sold[Math.floor(sold.length / 2)]);
+        cell.basis = "ЭТА ТОЧКА";
         cell.tag = "МАЛО ДАННЫХ";
-        notes.push(`только ${done.length} ${done.length === 1 ? "поставка" : "поставки"} в истории`);
-      } else if (benchmark !== null) {
-        cell.base = benchmark;
+        notes.push(`только ${done.length} ${done.length === 1 ? "поставка" : "поставки"} в истории этой точки`);
+      } else if (group) {
+        cell.base = group.value;
+        cell.basis = "ГРУППА";
         cell.tag = "НОВЫЙ";
-        notes.push(`в этом холодильнике блюда не было — по другим холодильникам обычно ${benchmark} шт.`);
+        notes.push(`в этом холодильнике блюда не было — в холодильниках группы ${fr.transferGroup} (${group.n}) обычно ${group.value} шт.`);
+      } else if (network) {
+        cell.base = network.value;
+        cell.basis = "СЕТЬ";
+        cell.tag = "НОВЫЙ";
+        notes.push(`ни в этом холодильнике, ни в группе блюда не было — по сети (${network.n} холодильников) обычно ${network.value} шт.`);
       } else {
         cell.tag = "НОВЫЙ";
-        notes.push("блюда не было ни в одном холодильнике — предварительно 1–2 шт., решает менеджер");
+        notes.push("блюда не было ни в одном холодильнике — точного числа нет; осторожный старт 1–2 шт., решает менеджер");
         return;
       }
 

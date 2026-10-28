@@ -12,7 +12,8 @@ import { shelfHoursFor, type ShelfLifeSettings } from "../config/shelfLife";
  *  1. Every delivery: loaded → sold within the shelf life (FIFO: the oldest units go first) → unloaded / written off /
  *     left when the shelf life ended. Sell-through = sold within shelf life ÷ loaded.
  *  2. The norm from the last 8 COMPLETE deliveries (shelf life over, no data gap):
- *       ставить = how many usually sold within the shelf life (median), range = weak … usual loading;
+ *       ставить = how many usually sold within the shelf life (median, the upper one of an even count), range = weak …
+ *       usual loading;
  *       the last 3 deliveries all sold out → +1 (the demand was higher than what was there). Deliveries that keep leaving
  *       2+ for write-off are cut by construction (ставить = sold, not loaded) and named in "почему".
  *  3. Today's delivery = target − what is still fresh in the fridge (expired units do not count).
@@ -260,7 +261,8 @@ export function storedStatFor(input: {
     const soldS = recentComplete.map((b) => Math.round(b.soldInShelf)).sort((a, b) => a - b);
     const loadedS = recentComplete.map((b) => Math.round(b.loaded)).sort((a, b) => a - b);
     loadedMedian = quantile(loadedS, 0.5);
-    let rec = quantile(soldS, 0.5);
+    // the usual sale: the median (the upper one of an even count: 4, 4, 5, 5 → 5)
+    let rec = soldS[Math.floor(soldS.length / 2)];
     why.push(`за срок годности ${shelf.hours} ч: ${recentComplete.length} последних поставок — обычно ставили ${rng(batches.usualLoaded!)}, продавалось ${rng(batches.usualSold!)}, оставалось ${rng(batches.usualLeft!)}`);
     if (rec === 0) {
       norm = { min: 0, rec: 0, max: 1 };

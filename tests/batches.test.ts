@@ -87,3 +87,58 @@ test("a data gap inside the shelf-life window makes the delivery incomplete (not
   const r = analyseBatches({ events: ev, from: at(0, 0), now: at(4, 0), currentStock: 0, shelfHours: 48, gapDays: gap });
   assert.equal(r.batches[0].complete, false);
 });
+
+// ── the norm from deliveries (engine/productNorm.ts storedStatFor) on the business examples
+import { storedStatFor } from "../src/lib/engine/productNorm";
+
+function normFrom(pairs: [number, number, number?][]) {
+  const batches = pairs.map(([loaded, sold, writtenOff = 0], i) => ({
+    at: T0 + i * 2 * DAY,
+    loaded,
+    before: 0,
+    sold24: sold,
+    soldInShelf: sold,
+    soldAfter: 0,
+    unloaded: 0,
+    writtenOff,
+    leftAtExpiry: loaded - sold,
+    complete: true,
+    soldOut: sold >= loaded,
+  }));
+  const zero = new Float32Array(180);
+  return storedStatFor({
+    today: Math.floor(T0 / DAY) + 30,
+    startDay: Math.floor(T0 / DAY) - 150,
+    historyFromDay: Math.floor(T0 / DAY) - 150,
+    openDay: () => true,
+    soldDaily: zero,
+    loadedDaily: zero,
+    removedDaily: zero,
+    writtenOffDaily: zero,
+    firstDay: Math.floor(T0 / DAY),
+    shelf: { hours: 48, source: "category" },
+    br: { batches, ages: [], expiredNow: 0, startStock: 0, consistent: true, replayStock: 0, unattributed: 0, lots: [] },
+    fillupsKnown: true,
+    gapDays: 0,
+  });
+}
+
+test("7→6 (1 списано), 6→6, 7→7, 6→5, 7→6 → ставить 6", () => {
+  const st = normFrom([[7, 6, 1], [6, 6], [7, 7], [6, 5], [7, 6]]);
+  assert.equal(st.norm!.rec, 6);
+  assert.deepEqual(st.batches.usualLoaded, { low: 6, high: 7 });
+});
+
+test("always sold out 5→5 ×4 → not 'норма 5': check 6", () => {
+  const st = normFrom([[5, 5], [5, 5], [5, 5], [5, 5]]);
+  assert.equal(st.norm!.rec, 6);
+  assert.equal(st.status, "MORE");
+  assert.ok(st.why.some((w) => w.includes("ушли полностью")));
+});
+
+test("always left over 7→4, 7→5, 7→4, 7→5 (written off) → lower to 5", () => {
+  const st = normFrom([[7, 4, 3], [7, 5, 2], [7, 4, 3], [7, 5, 2]]);
+  assert.equal(st.norm!.rec, 5);
+  assert.equal(st.status, "LESS");
+  assert.ok(st.why.some((w) => w.includes("списывалось")));
+});

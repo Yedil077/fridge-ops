@@ -11,10 +11,10 @@ import { LiveClock } from "@/components/LiveClock";
 import { DataSourceBadge } from "@/components/DataSourceBadge";
 
 const TABS = [
-  { href: "/m", label: "Сегодня", icon: "🏠" },
+  { href: "/m", label: "Главная", icon: "🏠" },
+  { href: "/m/tomorrow", label: "Tomorrow", icon: "📅" },
   { href: "/m/tasks", label: "Перемещения", icon: "🔁" },
   { href: "/m/fridges", label: "Холодильники", icon: "🧊" },
-  { href: "/m/tomorrow", label: "Завтра", icon: "📅" },
   { href: "/m/analytics", label: "Аналитика", icon: "📊" },
 ];
 
