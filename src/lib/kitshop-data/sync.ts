@@ -168,6 +168,34 @@ export class KitShopSync {
     return t === null ? null : t + (this.d.timeOffsetMs ?? 0);
   }
 
+  /** Our wall-clock period → KiT Shop's own clock (the same offset as when reading, the other way). */
+  private ks(q: { from: number; to: number }) {
+    const off = this.d.timeOffsetMs ?? 0;
+    return { from: q.from - off, to: q.to - off };
+  }
+
+  /** Once an hour: how old is the newest receipt KiT Shop has (in its own clock vs ours)? See KsSyncState.clockProbe. */
+  private async probeClock(now: number) {
+    const last = this.d.ds.state.clockProbe;
+    if (last && now - last.at < 3_600_000) return;
+    const rows = await this.d.reader.getSales(this.ks({ from: now - 12 * 3_600_000, to: now + 12 * 3_600_000 }));
+    let newest = -Infinity;
+    const times: number[] = [];
+    for (const r of rows) {
+      const t = this.toWall(r.SaleDateTime);
+      if (t === null) continue;
+      times.push(t);
+      if (t > newest) newest = t;
+    }
+    if (!Number.isFinite(newest)) return;
+    this.d.ds.state.clockProbe = {
+      at: now,
+      gapMinutes: Math.round((now - newest) / 60_000),
+      receiptsLastHour: times.filter((t) => t > newest - 3_600_000).length,
+      offsetMinutes: Math.round((this.d.timeOffsetMs ?? 0) / 60_000),
+    };
+  }
+
   /** Adds receipts; a SaleId already known is never stored twice (overlap / backfill re-reads are free). */
   private async addSales(rows: Awaited<ReturnType<Reader["getSales"]>>): Promise<number> {
     const { ds, repo } = this.d;
@@ -386,20 +414,26 @@ export class KitShopSync {
       const from = ds.state.lastSalesSyncAt !== null ? ds.state.lastSalesSyncAt - this.o.salesOverlapMs : now - DAY;
       const okSales = await step("GetSales (новые)", async () => {
         let n = 0;
-        for (let a = from; a < now; a += 30 * DAY) n += await this.addSales(await reader.getSales({ from: a, to: Math.min(now, a + 30 * DAY) }));
+        for (let a = from; a < now; a += 30 * DAY) n += await this.addSales(await reader.getSales(this.ks({ from: a, to: Math.min(now, a + 30 * DAY) })));
         return n;
       });
       if (okSales) {
         ds.state.lastSalesSyncAt = now;
         if (ds.state.backfillFrom === null) ds.state.backfillFrom = from;
       }
+      // 3a. clock check (hourly, one GetSales call)
+      await step("Проверка часов", async () => {
+        await this.probeClock(now);
+        return ds.state.clockProbe?.gapMinutes ?? 0;
+      });
+
       // 3b. new loads / unloads of our fridges (same overlap idea)
       const getFillUps = reader.getFillUps?.bind(reader);
       if (getFillUps) {
         const ffrom = ds.state.lastFillupsSyncAt !== null ? ds.state.lastFillupsSyncAt - this.o.salesOverlapMs : now - DAY;
         const okFill = await step("GetFillUps (новые)", async () => {
           let n = 0;
-          for (let a = ffrom; a < now; a += 30 * DAY) n += await this.addFillUps(await getFillUps({ from: a, to: Math.min(now, a + 30 * DAY) }));
+          for (let a = ffrom; a < now; a += 30 * DAY) n += await this.addFillUps(await getFillUps(this.ks({ from: a, to: Math.min(now, a + 30 * DAY) })));
           return n;
         });
         if (okFill) {
@@ -420,7 +454,7 @@ export class KitShopSync {
       for (let i = 0; i < this.o.backfillChunksPerTick && ds.state.backfillFrom !== null && ds.state.backfillFrom > target; i++) {
         const to = ds.state.backfillFrom;
         const a = Math.max(target, to - this.o.backfillChunkDays * DAY);
-        const ok = await step("GetSales (история)", async () => this.addSales(await reader.getSales({ from: a, to })));
+        const ok = await step("GetSales (история)", async () => this.addSales(await reader.getSales(this.ks({ from: a, to }))));
         if (!ok) break;
         ds.state.backfillFrom = a;
         await this.sleep(this.o.delayMs);
@@ -431,7 +465,7 @@ export class KitShopSync {
         for (let i = 0; i < this.o.fillupChunksPerTick && (ds.state.fillupsBackfillFrom ?? null) !== null && ds.state.fillupsBackfillFrom! > target; i++) {
           const to = ds.state.fillupsBackfillFrom!;
           const a = Math.max(target, to - this.o.fillupChunkDays * DAY);
-          const ok = await step("GetFillUps (история)", async () => this.addFillUps(await getFillUps({ from: a, to })));
+          const ok = await step("GetFillUps (история)", async () => this.addFillUps(await getFillUps(this.ks({ from: a, to }))));
           if (!ok) break;
           ds.state.fillupsBackfillFrom = a;
           await this.sleep(this.o.delayMs);

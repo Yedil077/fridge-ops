@@ -135,6 +135,7 @@ function kitshopDataset(opts: { undetailedDaysAgo?: number } = {}) {
   ds.stock.set("621583", new Map([["1", 9], ["2", 8], ["3", 3], ["4", 6]]));
   ds.stock.set("621826", new Map([["1", 1], ["3", 1]]));
   ds.stock.set("621586", new Map([["1", 4], ["2", 4], ["3", 2], ["4", 3]]));
+  for (const id of SATTI) ds.stockAt.set(id, NOW);
   ds.state.backfillFrom = NOW - 61 * DAY;
   return ds;
 }

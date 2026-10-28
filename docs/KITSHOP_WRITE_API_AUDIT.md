@@ -85,7 +85,7 @@ not an error. We refresh it right after each confirmed write.
 
 ### 2.4 WRITE-OFF ❌ not found
 
-The documentation has **no write-off method**. FillupType has only 1 load, 2 unload, 3 mixed.
+The documentation has **no write-off method**. FillupType: 1 load, 2 unload, 3 write-off («Списание» — the company's KiT Shop reference sheet; real data has all three, with POSITIVE quantities for unloads and write-offs, so the direction comes from the type, not the sign).
 The other write methods do not cover it either. Options:
 
 * (a) a write-off is recorded as an **UNLOAD** in KiT Shop (`Fillup < 0`, `Notes = "FO:<uuid> СПИСАНИЕ: <reason>"`)

@@ -91,6 +91,11 @@ export interface KsSyncState {
   lastStockSyncAt: number | null;
   lastSalesSyncAt: number | null;
   lastFillupsSyncAt: number | null;
+  /**
+   * Hourly clock check: the newest receipt KiT Shop has right now vs our clock. While the fridges are busy the newest
+   * receipt is minutes old — a gap of hours means KiT Shop gives times in another timezone than ours.
+   */
+  clockProbe?: { at: number; gapMinutes: number; receiptsLastHour: number; offsetMinutes: number } | null;
   /** oldest wall-clock ms already listed through GetFillUps (fill-up backfill, like backfillFrom for receipts) */
   fillupsBackfillFrom?: number | null;
   /** oldest wall-clock ms already listed through GetSales (backfill goes back to now − KITSHOP_BACKFILL_DAYS) */

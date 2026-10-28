@@ -1,12 +1,13 @@
 import "server-only";
 import type { NetworkSnapshot } from "../domain/types";
 import type { AnalysisResult } from "../engine/analysis";
-import { NORM, STATUS_TEXT } from "../engine/productNorm";
+import { CONFIDENCE_TEXT, NORM, QUALITY_TEXT, STATUS_TEXT } from "../engine/productNorm";
 import { DAY_MS } from "../time";
 
 /**
- * Аналитика = PRODUCT × FRIDGE: every dish of the chosen fridge with its sales, loads / unloads, availability and the
- * norm per day, plus today's target (the same product cells the transfer recommendations use — engine/demand.ts).
+ * Аналитика = PRODUCT × FRIDGE: every dish of the chosen fridge — sales, loads / unloads / write-offs, availability
+ * (fact and estimate apart), the norm in whole units with "почему", data quality, and today's target (the same product
+ * cells the transfer recommendations use — engine/demand.ts). No fractions of a dish leave the server.
  */
 
 const ddmm = (day: number | null | undefined) => {
@@ -30,21 +31,25 @@ export function productAnalyticsView(snap: NetworkSnapshot, a: AnalysisResult, f
     const cat = catById.get(pr.categoryId)!;
     const cn = now[fi * P + st.p];
     const ce = eve[fi * P + st.p];
+    const { f: _f, p: _p, ...facts } = st;
+    void _f;
+    void _p;
     return {
       productId: pr.id,
+      externalId: pr.externalId,
       name: pr.name,
       category: { id: cat.id, name: cat.name, emoji: cat.emoji },
-      ...st,
+      ...facts,
       statusText: STATUS_TEXT[st.status],
-      today: cn
-        ? { target: cn.target, stock: cn.stock, need: cn.need, surplus: cn.surplus, keep: cn.keep, inbound: cn.inbound, outbound: cn.outbound, reason: cn.reason, eveningTarget: ce?.target ?? null }
-        : null,
+      qualityText: QUALITY_TEXT[st.quality],
+      confidenceText: CONFIDENCE_TEXT[st.confidence],
+      // whole units only
+      today: cn ? { target: cn.target, stock: cn.stock, need: cn.need, surplus: cn.surplus, keep: cn.keep, inbound: cn.inbound, outbound: cn.outbound, reason: cn.reason, eveningTarget: ce?.target ?? null } : null,
     };
   });
   rows.sort((x, y) => y.sold.d30 - x.sold.d30 || y.stock - x.stock || x.name.localeCompare(y.name, "ru"));
 
   const sum = (k: (r: (typeof rows)[number]) => number) => rows.reduce((acc, r) => acc + k(r), 0);
-  const eodKnown = rows.filter((r) => r.avgEod30 !== null);
   const pd = snap.productDays;
   const di = a.demandIndex[fi];
   const categories = snap.categories.map((c, ci) => {
@@ -55,26 +60,13 @@ export function productAnalyticsView(snap: NetworkSnapshot, a: AnalysisResult, f
       name: c.name,
       emoji: c.emoji,
       sold30,
-      index: Math.round(idx * 100) / 100,
       level: sold30 === 0 ? "нет продаж" : idx >= 1.15 ? "высокий спрос" : idx <= 0.85 ? "низкий спрос" : "нормальный спрос",
     };
   });
 
-  const analysedAll = a.products.byFridge.reduce((acc, list) => acc + list.length, 0);
+  const checks = pd?.checks[fi] ?? [];
   const notes: string[] = [];
   if (!pd) notes.push("Нет данных о загрузках, снятиях и остатках по дням (режим без KiT Shop): наличие товара не учитывается.");
-  else {
-    if (pd.stockKnownFromDay === null && !pd.unbalanced.includes(fr.name)) notes.push("Наличие товара по дням пока неизвестно: история остатков только начала сохраняться, загрузки/снятия ещё догружаются. Пока дни без данных считаются днями «с товаром».");
-    if (pd.fillupsFromDay === null) notes.push("Загрузки и снятия ещё не прочитаны из KiT Shop.");
-    else if (pd.fillupsFromDay > a.ctx.today - 30) notes.push(`Загрузки и снятия известны только с ${ddmm(pd.fillupsFromDay)} — цифры «Снято» за 30 дней неполные.`);
-    if (pd.unbalanced.includes(fr.name))
-      notes.push(
-        `Загрузки ${fr.name} в KiT Shop не сходятся с продажами (загружено заметно меньше, чем продано и снято) — прошлое наличие не восстанавливается, считается только по истории остатков${pd.stockHistoryFromDay !== null ? ` (с ${ddmm(pd.stockHistoryFromDay)})` : ""}.`,
-      );
-    if (pd.reconstructionFixes > 0) notes.push(`При восстановлении остатков ${pd.reconstructionFixes} раз не сошлось движение (в KiT Shop есть изменения остатка без загрузки/снятия, например корректировки).`);
-  }
-  const hf = snap.historyFromDay ?? null;
-  if (hf !== null && hf > a.ctx.today - 180) notes.push(`Продажи по блюдам полные только с ${ddmm(hf)} (история догружается) — окна 60/90/180 дней короче.`);
 
   return {
     now: snap.now,
@@ -86,34 +78,39 @@ export function productAnalyticsView(snap: NetworkSnapshot, a: AnalysisResult, f
       name: fr.name,
       group: fr.transferGroup ?? null,
       summary: {
-        sold30: Math.round(sum((r) => r.sold.d30)),
-        removed30: Math.round(sum((r) => r.removed30)),
-        writtenOff30: Math.round(sum((r) => r.writtenOff30)),
-        avgStock: eodKnown.length ? Math.round(eodKnown.reduce((acc, r) => acc + (r.avgEod30 ?? 0), 0)) : null,
+        sold30: sum((r) => r.sold.d30),
+        loaded30: sum((r) => r.loaded30),
+        removed30: sum((r) => r.removed30),
+        writtenOff30: sum((r) => r.writtenOff30),
         stockNow: sum((r) => r.stock),
-        deficit: rows.filter((r) => r.status === "MORE").length,
-        surplus: rows.filter((r) => r.status === "TOO_MUCH" || r.status === "LESS").length,
+        more: rows.filter((r) => r.status === "MORE").length,
+        tooMuch: rows.filter((r) => r.status === "TOO_MUCH" || r.status === "LESS").length,
+        noData: rows.filter((r) => r.status === "NO_DATA").length,
         needNow: rows.filter((r) => (r.today?.need ?? 0) > 0).length,
         canGiveNow: rows.filter((r) => (r.today?.surplus ?? 0) > 0).length,
       },
       categories,
+      checks,
+      checksFailed: checks.filter((c) => c.level === "FAIL").length,
     },
     products: rows,
     data: {
       productsHere: rows.length,
-      productsAll: analysedAll,
-      salesFrom: ddmm(hf),
+      productsAll: a.products.byFridge.reduce((acc, list) => acc + list.length, 0),
+      salesFrom: ddmm(snap.historyFromDay),
       fillupsFrom: ddmm(pd?.fillupsFromDay),
-      stockKnownFrom: ddmm(pd?.stockKnownFromDay),
       stockHistoryFrom: ddmm(pd?.stockHistoryFromDay),
       writeOffRule: pd?.writeOffRule ?? null,
       notes,
       formula: [
-        "Продажи за день с товаром = продано ÷ сумма наличия по открытым дням (день, когда товар был лишь половину времени продаж, считается за 0,5)",
-        "Скорость = 0,35 × 7 дн. + 0,25 × 14 дн. + 0,25 × 30 дн. + 0,15 × 180 дн. (окна без данных не участвуют)",
-        `+10%, если часто заканчивался (≥ ${Math.round(NORM.frequentOutShare * 100)}% времени без товара или ≥ ${NORM.frequentOutTimes} раз за 30 дн.); −10%, если списано ≥ ${Math.round(NORM.heavyWriteOffShare * 100)}% или снято ≥ ${Math.round(NORM.heavyRemovalShare * 100)}% загруженного`,
-        "Норма = ⌈скорость − 0,2⌉ (не меньше 1), диапазон: округл(0,75 × скорость) … ⌈1,25 × скорость⌉; меньше 0,15 в день — нормы нет",
-        "Сегодня иметь = скорость × доля обычных продаж точки, которая ещё впереди сегодня (меньше 0,3 → 0, иначе не меньше 1)",
+        `Дни для расчёта (последние ${NORM.windowDays}): дни, когда блюдо точно было в холодильнике по истории остатков (каждые 5 минут). Пока этой истории мало — только дни с продажами (дни без продаж не считаются «нулевым спросом»)`,
+        "Обычно = сколько штук уходило в половине этих дней (от 25% до 75% дней), в сильные дни = 90% дней",
+        "Норма = столько, сколько хватает в 3 днях из 4 (не меньше 1 шт.); минимум = обычный слабый день; максимум = сильный день",
+        `Если снято и списано ≥ ${Math.round(NORM.lossShare * 100)}% загруженного — норма по обычному дню (лишнее остаётся)`,
+        `Если по истории остатков закончился в ≥ ${Math.round(NORM.soldOutShare * 100)}% дней — +1 шт.`,
+        `Покупают в ≤ ${Math.round(NORM.rareShare * 100)}% дней: «не держать ежедневно», если история остатков подтверждает, что блюдо стояло; иначе 1 шт.`,
+        "Сегодня иметь = норма × доля обычных продаж точки, которая ещё впереди сегодня, в целых штуках",
+        "Оценка прошлого наличия (восстановление по продажам и загрузкам) показывается отдельно и в норму не входит",
       ],
     },
   };

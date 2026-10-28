@@ -128,19 +128,31 @@ export interface NetworkSnapshot {
   productDays?: ProductDays;
 }
 
+/** One data check of a fridge, shown before any norm is trusted. */
+export interface DataCheck {
+  id: string;
+  label: string;
+  level: "OK" | "WARN" | "FAIL";
+  detail: string;
+}
+
 /** Fridge × dish × day facts that sales alone cannot give. Arrays are F*P*D (index (f * P + p) * D + d). */
 export interface ProductDays {
-  /** share of the fridge's sales made while the dish was on the shelf, 0..1; NaN = stock not known that day */
+  /** ESTIMATE (history + reconstruction): share of the fridge's sales made while the dish was there, 0..1; NaN = unknown */
   avail: Float32Array;
-  /** times a sale took the last unit */
+  /** ESTIMATE: times a sale took the last unit */
   ranOut: Uint8Array;
-  /** stock at the end of the day; NaN = unknown */
+  /** ESTIMATE: stock at the end of the day; NaN = unknown */
   eod: Float32Array;
-  /** units loaded (fill-ups with quantity > 0) */
+  /** FACT: the same from the 5-minute stock history only (NaN / 0 where there is no history) */
+  availFact: Float32Array;
+  ranOutFact: Uint8Array;
+  eodFact: Float32Array;
+  /** units loaded (FillupType 1) */
   loaded: Float32Array;
-  /** units taken out (fill-ups with quantity < 0), as a positive number — write-offs AND moves to other fridges */
+  /** units taken out by an unload (FillupType 2) — moves, returns, anything; NOT a write-off */
   removed: Float32Array;
-  /** of the taken out: confirmed write-off (the fill-up note says so) */
+  /** confirmed write-off (FillupType 3 «Списание») */
   writtenOff: Float32Array;
   /** F*P first day the dish appeared at the fridge (sale, load or stock); −1 = never */
   firstDay: Int32Array;
@@ -156,6 +168,8 @@ export interface ProductDays {
   unbalanced: string[];
   /** how a write-off is recognised */
   writeOffRule: string;
+  /** per fridge index: data checks (sales, ids, duplicates, stock freshness, timezone, completeness) */
+  checks: DataCheck[][];
 }
 
 // ───────────────────────── Engine outputs ─────────────────────────

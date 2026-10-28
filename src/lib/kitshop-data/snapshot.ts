@@ -5,6 +5,7 @@ import { dayNumber, minuteOfDay } from "../time";
 import { categorizeProduct } from "@/services/kitshop/adapter";
 import type { KsDataset } from "./dataset";
 import { buildTimeline, type TimelineInput } from "./stockTimeline";
+import { fridgeChecks } from "./checks";
 
 /**
  * NetworkSnapshot built ONLY from the real KiT Shop copy (no simulator anywhere).
@@ -134,7 +135,7 @@ export function buildKitShopSnapshot(ds: KsDataset, configured: Fridge[], now: n
     }
   }
 
-  const productDays = buildProductDays(ds, fridges, products, startDay, D, now);
+  const productDays = buildProductDays(ds, fridges, products, startDay, D, now, historyFromDay);
 
   return {
     now,
@@ -153,9 +154,19 @@ export function buildKitShopSnapshot(ds: KsDataset, configured: Fridge[], now: n
   };
 }
 
-/** A write-off is CONFIRMED only when the note of the unload says so; any other unload is just "снято". */
-export const WRITE_OFF_NOTE = /списан|спис\.|брак|просроч|истек|истёк|испорч|утилиз|срок годн/i;
-export const WRITE_OFF_RULE = "снятие, в комментарии которого написано «списание», «брак», «просрочка», «истёк срок», «испорчено» или «утилизация»";
+/**
+ * Direction of a fill-up line by its KiT Shop operation type (FillupType: 1 загрузка, 2 разгрузка, 3 списание — the
+ * company's own reference, «Справочник» in the KiT Shop integration sheet). KiT Shop gives the quantity of an unload /
+ * write-off as a POSITIVE number, so the sign alone must not decide. Unknown type → the sign.
+ *   load → +qty; unload → −|qty| ("снято": moves, returns, anything); write-off → −|qty| and counted as a CONFIRMED write-off.
+ */
+export function fillDirection(type: number | null, qty: number): { delta: number; kind: "load" | "unload" | "writeoff" } {
+  if (type === 3) return { delta: -Math.abs(qty), kind: "writeoff" };
+  if (type === 2) return { delta: -Math.abs(qty), kind: "unload" };
+  if (type === 1) return { delta: qty, kind: qty >= 0 ? "load" : "unload" };
+  return { delta: qty, kind: qty >= 0 ? "load" : "unload" };
+}
+export const WRITE_OFF_RULE = "операция KiT Shop с типом «Списание» (FillupType 3); «Разгрузка» (FillupType 2) — это только «снято»: перенос, возврат или другое";
 
 const pdCache = new WeakMap<KsDataset, { key: string; value: ProductDays }>();
 
@@ -163,8 +174,9 @@ const pdCache = new WeakMap<KsDataset, { key: string; value: ProductDays }>();
  * Availability and loads / unloads per fridge × dish × history day. Depends only on the data (not on the minute),
  * so it is rebuilt when the sync changed something.
  */
-function buildProductDays(ds: KsDataset, fridges: Fridge[], products: Product[], startDay: number, D: number, now: number): ProductDays {
-  const key = `${ds.version}:${dayNumber(now)}:${fridges.map((f) => f.externalId).join(",")}:${products.length}`;
+function buildProductDays(ds: KsDataset, fridges: Fridge[], products: Product[], startDay: number, D: number, now: number, historyFromDay: number): ProductDays {
+  // the data checks look at stock freshness → rebuilt at least every 5 minutes
+  const key = `${ds.version}:${Math.floor(now / 300_000)}:${fridges.map((f) => f.externalId).join(",")}:${products.length}`;
   const hit = pdCache.get(ds);
   if (hit?.key === key) return hit.value;
   const F = fridges.length;
@@ -175,6 +187,9 @@ function buildProductDays(ds: KsDataset, fridges: Fridge[], products: Product[],
   const avail = new Float32Array(F * P * D).fill(NaN);
   const eod = new Float32Array(F * P * D).fill(NaN);
   const ranOut = new Uint8Array(F * P * D);
+  const availFact = new Float32Array(F * P * D).fill(NaN);
+  const eodFact = new Float32Array(F * P * D).fill(NaN);
+  const ranOutFact = new Uint8Array(F * P * D);
   const loaded = new Float32Array(F * P * D);
   const removed = new Float32Array(F * P * D);
   const writtenOff = new Float32Array(F * P * D);
@@ -214,25 +229,24 @@ function buildProductDays(ds: KsDataset, fridges: Fridge[], products: Product[],
     if (f === undefined || fu.at === null || !fu.detailed) continue;
     const ev = shopOf(fu.shopId);
     const day = dayNumber(fu.at);
-    const writeOff = WRITE_OFF_NOTE.test(fu.notes ?? "");
     for (const line of ds.fillUpLines.get(fu.fillupId) ?? []) {
-      ev.fills.push({ at: fu.at, productId: line.productId, qty: line.qty });
+      const dir = fillDirection(fu.type, line.qty);
+      ev.fills.push({ at: fu.at, productId: line.productId, qty: dir.delta });
       const p = pIdx.get(line.productId);
       if (p === undefined) continue;
-      if (line.qty > 0) seen(f, p, day);
+      if (dir.kind === "load") seen(f, p, day);
       const d = day - startDay;
       if (d < 0 || d >= D) continue;
-      if (line.qty > 0) loaded[at(f, p, d)] += line.qty;
-      else {
-        removed[at(f, p, d)] -= line.qty;
-        if (writeOff) writtenOff[at(f, p, d)] -= line.qty;
-      }
+      if (dir.kind === "load") loaded[at(f, p, d)] += dir.delta;
+      else if (dir.kind === "writeoff") writtenOff[at(f, p, d)] -= dir.delta;
+      else removed[at(f, p, d)] -= dir.delta;
     }
   }
 
   let fixes = 0;
   let firstCoverage: number | null = null;
   const unbalanced: string[] = [];
+  const balancedByShop = new Map<string, boolean>();
   for (const [shopId, f] of fIdx) {
     const history = ds.stockHistory.get(shopId) ?? new Map();
     const coverage = ds.stockCoverage.get(shopId) ?? [];
@@ -255,6 +269,7 @@ function buildProductDays(ds: KsDataset, fridges: Fridge[], products: Product[],
     const impliedStart = current + sold - moved;
     const balanced = impliedStart <= Math.max(60, 3 * current) && impliedStart >= -20;
     if (!balanced) unbalanced.push(fridges[f].name);
+    balancedByShop.set(shopId, balanced);
     const tl = buildTimeline({
       sales: ev.sales,
       fills: ev.fills,
@@ -273,6 +288,9 @@ function buildProductDays(ds: KsDataset, fridges: Fridge[], products: Product[],
       avail.set(dd.avail, at(f, p, 0));
       eod.set(dd.eod, at(f, p, 0));
       ranOut.set(dd.ranOut, at(f, p, 0));
+      availFact.set(dd.availFact, at(f, p, 0));
+      eodFact.set(dd.eodFact, at(f, p, 0));
+      ranOutFact.set(dd.ranOutFact, at(f, p, 0));
     }
   }
 
@@ -282,6 +300,9 @@ function buildProductDays(ds: KsDataset, fridges: Fridge[], products: Product[],
     avail,
     ranOut,
     eod,
+    availFact,
+    ranOutFact,
+    eodFact,
     loaded,
     removed,
     writtenOff,
@@ -292,6 +313,13 @@ function buildProductDays(ds: KsDataset, fridges: Fridge[], products: Product[],
     reconstructionFixes: fixes,
     unbalanced,
     writeOffRule: WRITE_OFF_RULE,
+    checks: fridges.map((fr) =>
+      fridgeChecks(ds, fr, now, {
+        historyFromDay,
+        fillupsFromDay: fb === null ? null : Math.ceil(fillFrom / 86_400_000),
+        balanced: balancedByShop.get(fr.externalId) ?? true,
+      }),
+    ),
   };
   pdCache.set(ds, { key, value });
   return value;

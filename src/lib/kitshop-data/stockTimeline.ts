@@ -7,6 +7,8 @@ import type { KsStockChange } from "./dataset";
  *      stock before a sale = stock after + qty sold;  stock before a load / unload = stock after − its quantity.
  *    Valid only where every receipt has its lines and every load / unload is known (validFrom). A step that would make the
  *    stock negative means KiT Shop has a movement we cannot see (e.g. a correction) → clamped to 0 and counted.
+ * FACT and ESTIMATE are kept apart: a day is a FACT only when the 5-minute stock history covers (almost) all of it;
+ * the reconstruction is an ESTIMATE and is never shown or used as a fact.
  * Per day the result is:
  *  • avail — share of the fridge's sales (all dishes) made while this dish had stock > 0 (1 = there all day; a closed night
  *    does not count, because nobody buys anything then). NaN = stock not known for the whole day;
@@ -31,9 +33,14 @@ export interface TimelineInput {
 }
 
 export interface DishDays {
+  /** history + reconstruction (ESTIMATE where reconstructed) */
   avail: Float32Array;
   ranOut: Uint8Array;
   eod: Float32Array;
+  /** only days fully covered by the 5-minute stock history (FACT); NaN = no fact that day */
+  availFact: Float32Array;
+  ranOutFact: Uint8Array;
+  eodFact: Float32Array;
 }
 
 export interface TimelineResult {
@@ -48,6 +55,8 @@ interface Interval {
   from: number;
   to: number;
   qty: number;
+  /** from the stock history (true) or reconstructed (false) */
+  fact: boolean;
 }
 
 /** Fridge sales as a cumulative curve: units sold in (t0, t1]. */
@@ -111,7 +120,7 @@ export function buildTimeline(inp: TimelineInput): TimelineResult {
       return q;
     };
     const intervals: Interval[] = [];
-    const ranOutAt: number[] = [];
+    const ranOutAt: { at: number; fact: boolean }[] = [];
 
     // 1. covered periods
     for (const [a, b] of coverage) {
@@ -120,14 +129,14 @@ export function buildTimeline(inp: TimelineInput): TimelineResult {
       for (const h of hist) {
         if (h.at <= a || h.at > b) continue;
         if (h.qty !== q) {
-          intervals.push({ from, to: h.at, qty: q });
+          intervals.push({ from, to: h.at, qty: q, fact: true });
           // sold out between two readings, not taken out by an unload
-          if (h.qty <= 0 && q > 0 && !fills.some((f) => f.qty < 0 && f.at > from && f.at <= h.at)) ranOutAt.push(h.at);
+          if (h.qty <= 0 && q > 0 && !fills.some((f) => f.qty < 0 && f.at > from && f.at <= h.at)) ranOutAt.push({ at: h.at, fact: true });
           from = h.at;
           q = h.qty;
         }
       }
-      intervals.push({ from, to: b, qty: q });
+      intervals.push({ from, to: b, qty: q, fact: true });
     }
 
     // 2. gaps, reconstructed backwards from the stock known at their end
@@ -148,52 +157,59 @@ export function buildTimeline(inp: TimelineInput): TimelineResult {
       let cur = g.endQty;
       let end = g.to;
       for (const e of events) {
-        intervals.push({ from: e.at, to: end, qty: cur });
+        intervals.push({ from: e.at, to: end, qty: cur, fact: false });
         let before = cur - e.delta;
         if (before < 0) {
           fixes++;
           before = 0;
         }
-        if (e.sale && cur <= 0 && before > 0) ranOutAt.push(e.at);
+        if (e.sale && cur <= 0 && before > 0) ranOutAt.push({ at: e.at, fact: false });
         cur = before;
         end = e.at;
       }
-      intervals.push({ from, to: end, qty: cur });
+      intervals.push({ from, to: end, qty: cur, fact: false });
     }
 
-    // 3. per day
-    const avail = new Float32Array(days).fill(NaN);
-    const eod = new Float32Array(days).fill(NaN);
-    const ranOut = new Uint8Array(days);
-    const known = new Float64Array(days);
-    const outUnits = new Float64Array(days);
-    for (const iv of intervals) {
-      const a = Math.max(iv.from, t0);
-      const b = Math.min(iv.to, tEnd);
-      if (b <= a) continue;
-      for (let d = Math.floor((a - t0) / DAY); d < days && t0 + d * DAY < b; d++) {
-        const da = Math.max(a, t0 + d * DAY);
-        const db = Math.min(b, t0 + (d + 1) * DAY);
-        if (db <= da) continue;
-        known[d] += db - da;
-        if (iv.qty <= 0) outUnits[d] += unitsIn(da, db);
-        // stock at the end of the day: the interval that covers 23:59:59
-        if (db >= t0 + (d + 1) * DAY - 1000) eod[d] = Math.max(0, iv.qty);
+    // 3. per day — once with everything (estimate), once with the stock history only (fact)
+    const perDay = (onlyFact: boolean) => {
+      const avail = new Float32Array(days).fill(NaN);
+      const eod = new Float32Array(days).fill(NaN);
+      const ranOut = new Uint8Array(days);
+      const known = new Float64Array(days);
+      const outUnits = new Float64Array(days);
+      for (const iv of intervals) {
+        if (onlyFact && !iv.fact) continue;
+        const a = Math.max(iv.from, t0);
+        const b = Math.min(iv.to, tEnd);
+        if (b <= a) continue;
+        for (let d = Math.floor((a - t0) / DAY); d < days && t0 + d * DAY < b; d++) {
+          const da = Math.max(a, t0 + d * DAY);
+          const db = Math.min(b, t0 + (d + 1) * DAY);
+          if (db <= da) continue;
+          known[d] += db - da;
+          if (iv.qty <= 0) outUnits[d] += unitsIn(da, db);
+          // stock at the end of the day: the interval that covers 23:59:59
+          if (db >= t0 + (d + 1) * DAY - 1000) eod[d] = Math.max(0, iv.qty);
+        }
       }
-    }
-    for (let d = 0; d < days; d++) {
-      // a day counts only when stock is known for (almost) all of it
-      if (known[d] < DAY * 0.97) {
-        eod[d] = NaN;
-        continue;
+      for (let d = 0; d < days; d++) {
+        // a day counts only when stock is known for (almost) all of it
+        if (known[d] < DAY * 0.97) {
+          eod[d] = NaN;
+          continue;
+        }
+        if (dayUnits[d] > 0) avail[d] = Math.max(0, 1 - outUnits[d] / dayUnits[d]);
       }
-      if (dayUnits[d] > 0) avail[d] = Math.max(0, 1 - outUnits[d] / dayUnits[d]);
-    }
-    for (const t of ranOutAt) {
-      const d = Math.floor((t - t0) / DAY);
-      if (d >= 0 && d < days && known[d] >= DAY * 0.97 && ranOut[d] < 255) ranOut[d]++;
-    }
-    out.set(pid, { avail, ranOut, eod });
+      for (const r of ranOutAt) {
+        if (onlyFact && !r.fact) continue;
+        const d = Math.floor((r.at - t0) / DAY);
+        if (d >= 0 && d < days && known[d] >= DAY * 0.97 && ranOut[d] < 255) ranOut[d]++;
+      }
+      return { avail, eod, ranOut };
+    };
+    const all = perDay(false);
+    const fact = perDay(true);
+    out.set(pid, { ...all, availFact: fact.avail, ranOutFact: fact.ranOut, eodFact: fact.eod });
   }
   return { dishes: out, fixes };
 }

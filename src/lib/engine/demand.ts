@@ -9,11 +9,12 @@ import { productStats, type ProductStat } from "./productNorm";
  * Built on the PRODUCT analytics (engine/productNorm.ts): every dish in every fridge has its norm per day; the transfer
  * recommendations and the analytics screen read these numbers; nothing else computes them.
  *
- * For one fridge × dish:
+ * For one fridge × dish (all in whole units):
  *   share of today left = the fridge's usual sales from now until the end of the horizon ÷ its usual day
- *   target   = rate × share  →  0 below 0.3, otherwise max(1, ⌈x − 0.2⌉)      ("сегодня рекомендуется иметь")
+ *   target   = norm × share  →  0 below 0.3, otherwise max(1, ⌈x − 0.2⌉)     ("сегодня рекомендуется иметь")
  *   need     = target − stock − already promised in   (only while the fridge sells now)
- *   keep     = what it sells until the end of today (target of today), at least 1 of a dish it normally sells
+ *   keep     = what it should have for the rest of today, at least 1 if it has the dish;
+ *              a dish WITHOUT a norm (not enough data) is never taken away and never asked for
  *   surplus  = stock − promised out − keep            (≤ 0 → it cannot be a source of this dish)
  * A category is just the sum of its dishes: a need for salads is "Цезарь +2, Сельдь +1", never "any 3 salads".
  *
@@ -136,19 +137,21 @@ export function demandGrid(
       const stock = ctx.snap.stock[f * P + p];
       const inb = inbound[f * P + p];
       const outb = outbound[f * P + p];
-      const expected = st.rateAdj * share;
-      const target = targetUnits(expected);
-      const need = targetEligible ? Math.max(0, target - stock - inb) : 0;
-      const keep = Math.max(targetUnits(st.rateAdj * shareDay), st.norm.rec >= 1 && stock > 0 ? 1 : 0);
+      const rec = st.norm?.rec ?? 0;
+      const expected = rec * share;
+      const target = st.norm ? targetUnits(expected) : 0;
+      const need = targetEligible && st.norm ? Math.max(0, target - stock - inb) : 0;
+      const keep = st.norm ? Math.max(targetUnits(rec * shareDay), stock > 0 ? 1 : 0) : stock;
       const surplus = sourceEligible ? Math.max(0, Math.floor(stock - outb - keep)) : 0;
-      const reason =
-        need > 0
-          ? `норма ${st.norm.rec}/день, до ${fmt(end)} нужно ${target}, есть ${stock + inb} → +${need}`
+      const reason = !st.norm
+        ? "нормы нет (мало данных) — не добавляем и не забираем"
+        : need > 0
+          ? `норма ${rec} шт./день, до ${fmt(end)} нужно ${target} шт., есть ${stock + inb} → добавить ${need} шт.`
           : surplus > 0
-            ? `есть ${stock}, до конца дня себе ${keep} → можно отдать ${surplus}`
+            ? `есть ${stock} шт., до конца дня себе ${keep} шт. → можно забрать ${surplus} шт.`
             : target > 0 && !targetEligible
               ? "сейчас продаж нет"
-              : `есть ${stock + inb}, до ${fmt(end)} нужно ${target} — хватает`;
+              : `есть ${stock + inb} шт., до ${fmt(end)} нужно ${target} шт. — хватает`;
       const cell: ProductCell = { f, p, stock, expected: r1(expected), target, need, keep, surplus, inbound: inb, outbound: outb, reason };
       products[f * P + p] = cell;
       perCat[catIdx.get(ctx.snap.products[p].categoryId)!].push(cell);
