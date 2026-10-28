@@ -165,3 +165,22 @@ test("incomplete history (receipts still without lines) → those days are left 
   assert.ok(conf(full).some((x) => x.confidence !== "LOW"), "60 days of history: not everything is low");
   assert.ok(conf(partial).every((x) => x.confidence === "LOW" && x.status === "NO_DATA"), "4 days of complete history never look like a norm");
 });
+
+test("«Все холодильники»: every network number is the sum of the fridges' own numbers — nothing computed differently", async () => {
+  const { networkAnalyticsView } = await import("../src/lib/server/networkAnalyticsView");
+  const snap = buildKitShopSnapshot(kitshopDataset(), satti(), NOW);
+  const a = analyze(snap, learning(), []);
+  const v = networkAnalyticsView(snap, a);
+  assert.equal(v.fridges.length, 3);
+  assert.equal(v.summary.sold30, a.products.byFridge.flat().reduce((acc, x) => acc + x.sold.d30, 0));
+  const P = snap.products.length;
+  for (const r of v.products) {
+    const p = snap.products.findIndex((x) => x.id === r.productId);
+    const per = a.products.byFridge.flat().filter((x) => x.p === p);
+    assert.equal(r.sold.d30, per.reduce((acc, x) => acc + x.sold.d30, 0));
+    assert.equal(r.stock, per.reduce((acc, x) => acc + x.stock, 0));
+    assert.equal(r.norm?.rec ?? null, per.some((x) => x.norm) ? per.reduce((acc, x) => acc + (x.norm?.rec ?? 0), 0) : null);
+    assert.equal(r.needNow, per.reduce((acc, x) => acc + (a.demand.NOW.products[x.f * P + p]?.need ?? 0), 0));
+    assert.equal(r.perFridge.length, per.length);
+  }
+});

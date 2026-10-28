@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import clsx from "clsx";
 import { api, useProductAnalytics, type ProductAnalyticsView } from "@/lib/client/api";
 import type { SheetCompare } from "@/lib/server/sheetCompare";
@@ -8,7 +8,7 @@ import type { SheetCompare } from "@/lib/server/sheetCompare";
 type Row = ProductAnalyticsView["products"][number];
 type Check = ProductAnalyticsView["fridge"]["checks"][number];
 
-const STATUS_CLS: Record<Row["status"], string> = {
+export const STATUS_CLS: Record<Row["status"], string> = {
   NORMAL: "bg-good/15 text-good-ink",
   MORE: "bg-crit/15 text-crit-ink",
   TOO_MUCH: "bg-warn/20 text-warn",
@@ -46,28 +46,38 @@ const SORTS: Record<SortKey, (r: Row) => number | string> = {
   status: (r) => ["MORE", "TOO_MUCH", "LESS", "RARE", "NORMAL", "NO_DATA", "UNUSED"].indexOf(r.status),
 };
 
-const pcs = (n: number) => `${n} шт.`;
+export const pcs = (n: number) => `${n} шт.`;
 const range = (a: number, b: number) => (a === b ? pcs(a) : `${a}–${b} шт.`);
-const STORE_KEY = "analytics-fridge";
+export const ALL_FRIDGES = "all";
 
-export function ProductAnalytics({ mobile = false }: { mobile?: boolean }) {
-  const [fridgeId, setFridgeId] = useState<string | null>(null);
-  useEffect(() => {
-    try {
-      const v = localStorage.getItem(STORE_KEY);
-      if (v) setFridgeId(v);
-    } catch {
-      /* private mode */
-    }
-  }, []);
-  const pick = (id: string) => {
-    setFridgeId(id);
-    try {
-      localStorage.setItem(STORE_KEY, id);
-    } catch {
-      /* private mode */
-    }
-  };
+export type FridgeOption = { id: string; name: string; group: string | null };
+
+/** Fridge selector: «Все холодильники» first, then the fridges by transfer group. */
+export function FridgePicker({ fridges, value, pick, mobile, note }: { fridges: FridgeOption[]; value: string; pick: (id: string) => void; mobile: boolean; note: ReactNode }) {
+  const groups = [...new Set(fridges.map((f) => f.group ?? "без группы"))];
+  return (
+    <div className={clsx("mb-3 flex flex-wrap items-center gap-3", mobile && "flex-col items-stretch")}>
+      <select value={value} onChange={(e) => pick(e.target.value)} className="h-11 rounded-xl border border-line bg-surface px-3 text-[16px] font-bold" aria-label="Холодильник">
+        <option value={ALL_FRIDGES}>Все холодильники (вся сеть)</option>
+        {groups.map((g) => (
+          <optgroup key={g} label={g}>
+            {fridges
+              .filter((f) => (f.group ?? "без группы") === g)
+              .map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.name}
+                </option>
+              ))}
+          </optgroup>
+        ))}
+      </select>
+      <span className="text-[12px] text-ink-3">{note}</span>
+    </div>
+  );
+}
+
+/** One fridge: every dish with its facts, norm and today's numbers. */
+export function FridgeView({ mobile, fridgeId, pick }: { mobile: boolean; fridgeId: string; pick: (id: string) => void }) {
   const { data, error, isFetching } = useProductAnalytics(fridgeId);
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState<(typeof FILTERS)[number]["id"]>("all");
@@ -95,30 +105,25 @@ export function ProductAnalytics({ mobile = false }: { mobile?: boolean }) {
   const s = data.fridge.summary;
   const counts = Object.fromEntries(FILTERS.map((f) => [f.id, data.products.filter((r) => f.test(r)).length]));
   const detail = data.products.find((r) => r.productId === open) ?? null;
-  const groups = [...new Set(data.fridges.map((f) => f.group ?? "без группы"))];
 
   return (
     <div>
       {/* 1. fridge */}
-      <div className={clsx("mb-3 flex flex-wrap items-center gap-3", mobile && "flex-col items-stretch")}>
-        <select value={data.fridge.id} onChange={(e) => pick(e.target.value)} className="h-11 rounded-xl border border-line bg-surface px-3 text-[16px] font-bold" aria-label="Холодильник">
-          {groups.map((g) => (
-            <optgroup key={g} label={g}>
-              {data.fridges
-                .filter((f) => (f.group ?? "без группы") === g)
-                .map((f) => (
-                  <option key={f.id} value={f.id}>
-                    {f.name}
-                  </option>
-                ))}
-            </optgroup>
-          ))}
-        </select>
-        <span className="text-[12px] text-ink-3">
-          {data.fridge.group ? `группа ${data.fridge.group} · ` : ""}блюд: {data.data.productsHere}
-          {isFetching ? " · обновляю…" : ""}
-        </span>
-      </div>
+      <FridgePicker
+        fridges={data.fridges}
+        value={data.fridge.id}
+        pick={pick}
+        mobile={mobile}
+        note={
+          <>
+            <button onClick={() => pick(ALL_FRIDGES)} className="mr-2 font-semibold underline">
+              ← все холодильники
+            </button>
+            {data.fridge.group ? `группа ${data.fridge.group} · ` : ""}блюд: {data.data.productsHere}
+            {isFetching ? " · обновляю…" : ""}
+          </>
+        }
+      />
 
       {/* 2. summary — whole units */}
       <section className={clsx("card grid gap-px overflow-hidden bg-line p-0", mobile ? "grid-cols-2" : "grid-cols-3 lg:grid-cols-6")}>
@@ -411,7 +416,7 @@ function TodayLine({ r }: { r: Row }) {
   );
 }
 
-function Kpi({ label, value, sub }: { label: string; value: string; sub?: string }) {
+export function Kpi({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
     <div className="bg-surface px-4 py-3">
       <div className="label leading-tight">{label}</div>
@@ -563,7 +568,7 @@ function Big({ label, value, tone, strong }: { label: string; value: string; ton
   );
 }
 
-function Small({ label, value }: { label: string; value: number }) {
+export function Small({ label, value }: { label: string; value: number }) {
   return (
     <div className="rounded-lg bg-surface-2 py-1.5">
       <div className="num text-[16px] font-bold">{value}</div>
@@ -572,7 +577,7 @@ function Small({ label, value }: { label: string; value: number }) {
   );
 }
 
-function Lines({ rows }: { rows: [string, string][] }) {
+export function Lines({ rows }: { rows: [string, string][] }) {
   return (
     <dl className="mt-2 space-y-1 text-[13px]">
       {rows.map(([k, v], i) => (
