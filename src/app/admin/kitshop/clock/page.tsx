@@ -130,6 +130,31 @@ export default function KitShopClockPage() {
             ))}
             {!d.last3.length && <p className="text-[13px] text-ink-3">Нет чеков.</p>}
           </Card>
+          <Card title="5. Чеки по дням: KiT Shop против нашей базы">
+            <table className="w-full text-[13px]">
+              <thead className="text-left text-ink-3">
+                <tr>
+                  <th className="py-1">Дата</th>
+                  <th className="text-right">В KiT Shop</th>
+                  <th className="text-right">У нас</th>
+                  <th className="text-right">С составом</th>
+                  <th className="text-right">Итог</th>
+                </tr>
+              </thead>
+              <tbody>
+                {d.days.map((x) => (
+                  <tr key={x.date} className="border-t border-line">
+                    <td className="py-1">{x.date}</td>
+                    <td className="num text-right">{x.kitshop ?? "—"}</td>
+                    <td className="num text-right">{x.ours ?? "—"}</td>
+                    <td className="num text-right">{x.oursWithLines ?? "—"}</td>
+                    <td className={x.gap ? "text-right font-bold text-crit-ink" : "text-right text-good-ink"}>{x.error ?? (x.gap ? "DATA GAP" : "совпадает")}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className="mt-1 text-[11px] text-ink-3">Сутки берутся по нашим часам (Алматы) с учётом текущего сдвига времени KiT Shop.</p>
+          </Card>
           {d.errors.length > 0 && (
             <Card title="Ошибки KiT Shop">
               {d.errors.map((e) => (

@@ -4,6 +4,7 @@ import { KsDataset } from "../src/lib/kitshop-data/dataset";
 import { MemoryKsRepo } from "../src/lib/kitshop-data/repo";
 import { KitShopSync } from "../src/lib/kitshop-data/sync";
 import { clockDiagnostic } from "../src/lib/server/kitshopClock";
+import { dsHistory } from "../src/lib/kitshop-data/history";
 
 /**
  * Time / new-receipt diagnostics on KiT Shop answers: raw SaleDateTime, our parsed time, the gap, the exact From/To
@@ -47,7 +48,10 @@ function fakeKitShop(behindMinutes: number) {
 test("diagnostic: newest receipt raw time from KiT Shop, our parsed time and the gap — proves a 120-minute shift", async () => {
   const k = fakeKitShop(120);
   const ds = new KsDataset();
-  const d = await clockDiagnostic({ reader: k.reader, ds, shopId: SHOP, shopName: "1 Шарипова 4 этаж", offsetMinutes: 0, now: NOW, lastSalesSyncAt: NOW - 5 * 60_000, overlapMs: 15 * 60_000 });
+  const d = await clockDiagnostic({ reader: k.reader, ds, shopId: SHOP, shopName: "1 Шарипова 4 этаж", offsetMinutes: 0, now: NOW, lastSalesSyncAt: NOW - 5 * 60_000, overlapMs: 15 * 60_000, history: dsHistory(ds) });
+  // the last days: KiT Shop has today's receipts, our copy has none → DATA GAP, never "a day off"
+  assert.equal(d.days.length, 3);
+  assert.deepEqual(d.days.at(-1), { date: "28.10.2026", kitshop: 90, ours: 0, oursWithLines: 0, gap: true, error: null });
   assert.equal(d.nowAlmaty, "28.10.2026 13:00:00");
   assert.equal(d.newest!.saleId, "5090");
   assert.equal(d.newest!.raw, "28.10.2026 11:00:00", "the raw string exactly as KiT Shop returned it");

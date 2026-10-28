@@ -42,7 +42,7 @@ export interface TomorrowCell {
   range: { min: number; max: number } | null;
   expectedLeft: number;
   confidence: "HIGH" | "MEDIUM" | "LOW";
-  tag: "НОВЫЙ" | "МАЛО ДАННЫХ" | "НЕ РАБОТАЕТ" | null;
+  tag: "НОВЫЙ" | "МАЛО ДАННЫХ" | "НЕ РАБОТАЕТ" | "ДАННЫЕ НЕПОЛНЫЕ" | null;
   /** where the base came from */
   basis: "ЭТА ТОЧКА" | "ГРУППА" | "СЕТЬ" | null;
   reason: {
@@ -111,6 +111,14 @@ export function computeTomorrow(input: {
         }
       }
 
+      // data checks of this fridge red (time, new receipts, gaps…) → no number a manager would trust
+      const failed = (snap.productDays?.checks[f] ?? []).filter((x) => x.level === "FAIL");
+      if (failed.length) {
+        cell.tag = "ДАННЫЕ НЕПОЛНЫЕ";
+        notes.push(`Недостаточно данных: проверка данных не пройдена (${failed.map((x) => x.label.toLowerCase()).join(", ")}) — числа не будет, пока данные не исправлены`);
+        return;
+      }
+
       const st = p === undefined ? undefined : stats.at[f * P + p];
       const stored = p === undefined ? undefined : snap.productDays?.stats[f * P + p];
       const done = (st?.recent ?? stored?.recent ?? []).filter((b) => b.complete);
@@ -132,7 +140,6 @@ export function computeTomorrow(input: {
         cell.base = norm.rec;
         cell.range = { min: norm.min, max: norm.max };
         cell.confidence = st?.norm ? st.confidence : "LOW";
-        if (!st?.norm) notes.push(`проверка данных не пройдена (${st?.statusReason ?? "нет данных"}) — число по последним поставкам, НИЗКАЯ уверенность`);
       } else if (done.length) {
         const sold = done.map((b) => b.soldInShelf).sort((a, b) => a - b);
         cell.base = Math.max(1, sold[Math.floor(sold.length / 2)]);

@@ -70,7 +70,7 @@ export function TomorrowScreen({ mobile = false }: { mobile?: boolean }) {
       </section>
       {data.status.fridgesWithFailedChecks.length > 0 && (
         <p className="mt-2 rounded-xl bg-warn/10 px-3 py-2 text-[12px]">
-          ⚠️ У {data.status.fridgesWithFailedChecks.length} холодильников не пройдена проверка данных — их числа с НИЗКОЙ уверенностью (жёлтые). Подробности — в Аналитике.
+          ⚠️ У {data.status.fridgesWithFailedChecks.length} холодильников не пройдена проверка данных — для них «?» (недостаточно данных), пока данные не исправлены. Подробности — в Аналитике.
         </p>
       )}
 

@@ -102,3 +102,16 @@ test("the fridge does not work on that weekday → 0", () => {
   assert.equal(cell(S1, "K1").qty, 0);
   assert.equal(cell(S1, "K1").tag, "НЕ РАБОТАЕТ");
 });
+
+test("red data checks (e.g. receipts from the future) → «Недостаточно данных», no number", () => {
+  const ds = dataset();
+  ds.sales.set("future", { saleId: "future", shopId: S1, soldAt: NOW + 2 * H, total: 1, detailed: true });
+  ds.positions.set("future", [{ saleId: "future", positionId: "f", productId: "1", qty: 1, price: 1 }]);
+  const fridges = configuredFridges(TODAY).filter((f) => f.externalId === S1 || f.externalId === S2);
+  const snap = buildKitShopSnapshot(ds, fridges, NOW);
+  const a = analyze(snap, { forecastBias: {}, pairStats: {} }, []);
+  const c = computeTomorrow({ snap, forecasts: a.forecasts, stats: a.products, menu: ["K1"], day: TODAY + 1 }).find((x) => x.shopId === S1)!;
+  assert.equal(c.qty, null);
+  assert.equal(c.tag, "ДАННЫЕ НЕПОЛНЫЕ");
+  assert.ok(c.reason.notes[0].startsWith("Недостаточно данных"));
+});

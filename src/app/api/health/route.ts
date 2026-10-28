@@ -5,6 +5,9 @@ import { autoUnusedReport } from "@/lib/server/unusedReport";
 
 export const dynamic = "force-dynamic";
 
+/** when this server process started (a new deploy = a new start) */
+const STARTED_AT = new Date().toISOString();
+
 /** Liveness / readiness for Docker, uptime monitors and CI smoke checks. No secrets, no auth. */
 export async function GET() {
   try {
@@ -13,7 +16,18 @@ export async function GET() {
     kitshopLiveStarted()?.nudge();
     void autoUnusedReport().catch(() => undefined);
     const ds = rt.dataStatus();
-    return NextResponse.json({ ok: true, mode: rt.mode, store: rt.store.kind, dataSource: ds.label, lastSyncAt: ds.lastSuccessAt, readOnly: rt.readOnly, time: new Date().toISOString() });
+    return NextResponse.json({
+      ok: true,
+      // the deployed commit (Render sets RENDER_GIT_COMMIT) — to check which version really runs
+      commit: (process.env.RENDER_GIT_COMMIT ?? process.env.GIT_COMMIT ?? "").slice(0, 7) || null,
+      startedAt: STARTED_AT,
+      mode: rt.mode,
+      store: rt.store.kind,
+      dataSource: ds.label,
+      lastSyncAt: ds.lastSuccessAt,
+      readOnly: rt.readOnly,
+      time: new Date().toISOString(),
+    });
   } catch (e) {
     // make startup problems visible in the platform logs (Render / Docker)
     console.error("[health] runtime failed to start:", e instanceof Error ? e.message : e);

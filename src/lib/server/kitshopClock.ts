@@ -2,6 +2,7 @@ import "server-only";
 import { kitshopDate, parseKitshopDate } from "@/services/kitshop/transport";
 import type { KitShopReadOnlyClient } from "@/services/kitshop/kitshopClient";
 import type { KsDataset, NewSalesLog } from "../kitshop-data/dataset";
+import type { HistorySource } from "../kitshop-data/history";
 import { wallClockNow } from "../time";
 
 /**
@@ -26,6 +27,9 @@ export async function clockDiagnostic(input: {
   now?: number;
   lastSalesSyncAt: number | null;
   overlapMs: number;
+  /** our copy (PostgreSQL) — receipts per day to compare with what KiT Shop has */
+  history?: HistorySource;
+  days?: number;
 }) {
   const now = input.now ?? wallClockNow(TZ);
   const off = input.offsetMinutes * 60_000;
@@ -95,7 +99,31 @@ export async function clockDiagnostic(input: {
     else wouldWrite++;
   }
 
+  // 5. the last days: receipts KiT Shop has for this shop vs receipts in our copy — a difference is a DATA GAP
+  const dayRows: { date: string; kitshop: number | null; ours: number | null; oursWithLines: number | null; gap: boolean; error: string | null }[] = [];
+  const today = Math.floor(now / 86_400_000);
+  for (let d = today - (input.days ?? 3) + 1; d <= today; d++) {
+    const from = d * 86_400_000;
+    const to = Math.min((d + 1) * 86_400_000, now);
+    let kitshop: number | null = null;
+    let ours: number | null = null;
+    let oursWithLines: number | null = null;
+    let error: string | null = null;
+    try {
+      kitshop = (await input.reader.getSales({ from: toKs(from), to: toKs(to), shopId: input.shopId })).length;
+    } catch (e) {
+      error = `KiT Shop: ${(e as Error).message}`;
+    }
+    if (input.history) {
+      const h = await input.history.shopHistory(input.shopId, from, to);
+      ours = h.receipts.length;
+      oursWithLines = h.receipts.filter((r) => r.detailed).length;
+    }
+    dayRows.push({ date: fmt(from)!.slice(0, 10), kitshop, ours, oursWithLines, gap: kitshop !== null && ours !== null && ours < kitshop, error });
+  }
+
   return {
+    days: dayRows,
     shop: { shopId: input.shopId, name: input.shopName },
     nowAlmaty: fmt(now),
     offsetMinutes: input.offsetMinutes,

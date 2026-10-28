@@ -22,5 +22,6 @@ export const GET = handle(async (req: Request) => {
     offsetMinutes: Number(process.env.KITSHOP_TIME_OFFSET_MINUTES ?? 0) || 0,
     lastSalesSyncAt: live.ds.state.lastSalesSyncAt,
     overlapMs: live.sync.o.salesOverlapMs,
+    history: live.repo.history(live.ds),
   });
 });
