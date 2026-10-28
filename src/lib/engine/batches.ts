@@ -49,6 +49,8 @@ export interface BatchResult {
   replayStock: number;
   /** sales that found no unit (start stock unknown / movements missing) */
   unattributed: number;
+  /** units still in the fridge, oldest first: when they came (null = before the replay, age unknown) */
+  lots: { at: number | null; left: number }[];
 }
 
 interface Lot {
@@ -164,5 +166,5 @@ export function analyseBatches(input: {
   const unknownAge = lots.filter((l) => !l.batch).reduce((a, l) => a + l.left, 0);
   if (unknownAge > 0) ages[ages.length - 1].qty += unknownAge;
 
-  return { batches, ages, expiredNow, startStock, consistent, replayStock, unattributed };
+  return { batches, ages, expiredNow, startStock, consistent, replayStock, unattributed, lots: lots.filter((l) => l.left > 0).map((l) => ({ at: l.batch ? l.at : null, left: l.left })) };
 }

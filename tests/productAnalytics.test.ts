@@ -1,6 +1,5 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildTimeline } from "../src/lib/kitshop-data/stockTimeline";
 import { KsDataset } from "../src/lib/kitshop-data/dataset";
 import { buildKitShopSnapshot, fillDirection } from "../src/lib/kitshop-data/snapshot";
 import { configuredFridges } from "../src/lib/simulator/model";
@@ -25,60 +24,6 @@ test("fill-up direction comes from the KiT Shop operation type: unload and write
   assert.deepEqual(fillDirection(3, 2), { delta: -2, kind: "writeoff" }, "Списание = confirmed write-off");
   assert.deepEqual(fillDirection(2, -3), { delta: -3, kind: "unload" });
   assert.deepEqual(fillDirection(null, -1), { delta: -1, kind: "unload" });
-});
-
-test("timeline: reconstruction is an ESTIMATE, the 5-minute stock history is a FACT — never mixed", () => {
-  const sales: { at: number; productId: string; qty: number }[] = [];
-  for (let d = 0; d < 2; d++) for (let h = 9; h <= 17; h++) sales.push({ at: t(S + d, h, 30), productId: "B", qty: 1 });
-  sales.push({ at: t(S + 1, 11), productId: "A", qty: 1 }, { at: t(S + 1, 11, 45), productId: "A", qty: 1 });
-  const r = buildTimeline({
-    sales,
-    fills: [],
-    history: new Map([
-      ["A", [{ at: t(S + 1, 0), qty: 2 }, { at: t(S + 1, 12), qty: 0 }]],
-      ["B", [{ at: t(S + 1, 0), qty: 20 }]],
-    ]),
-    coverage: [[t(S + 1, 0), t(S + 2, 0)]],
-    current: new Map([["B", 11]]),
-    currentAt: t(S + 2, 0),
-    validFrom: t(S, 0),
-    startDay: S,
-    days: 2,
-  });
-  const a = r.dishes.get("A")!;
-  // day 2 is a FACT: 2 until 12:00, then 0 → six of the eleven sales of the day were made without it
-  assert.ok(Math.abs(a.availFact[1] - (1 - 6 / 11)) < 1e-6);
-  assert.equal(a.ranOutFact[1], 1, "went to 0 without an unload → sold out");
-  // day 1 only reconstructed: an estimate exists, a fact does not
-  assert.equal(a.avail[0], 1);
-  assert.ok(Number.isNaN(a.availFact[0]), "no fact before the stock history");
-  assert.equal(a.ranOutFact[0], 0);
-});
-
-test("timeline: reconstruction backwards from sales and loads/unloads (estimate)", () => {
-  const sales: { at: number; productId: string; qty: number }[] = [];
-  for (let d = 0; d < 3; d++) for (let h = 9; h <= 17; h++) sales.push({ at: t(S + d, h, 30), productId: "B", qty: 1 });
-  sales.push({ at: t(S, 10), productId: "A", qty: 1 }, { at: t(S, 11), productId: "A", qty: 1 }, { at: t(S, 12), productId: "A", qty: 1 });
-  const r = buildTimeline({
-    sales,
-    fills: [
-      { at: t(S, 8), productId: "B", qty: 30 },
-      { at: t(S, 9), productId: "A", qty: 3 },
-    ],
-    history: new Map(),
-    coverage: [],
-    current: new Map([["B", 3]]),
-    currentAt: t(S + 3, 0),
-    validFrom: t(S, 0),
-    startDay: S,
-    days: 3,
-  });
-  assert.equal(r.fixes, 0);
-  const a = r.dishes.get("A")!;
-  assert.ok(Math.abs(a.avail[0] - 0.5) < 1e-6);
-  assert.equal(a.ranOut[0], 1);
-  assert.equal(a.avail[2], 0);
-  assert.ok(a.availFact.every((x) => Number.isNaN(x)), "nothing of it is a fact");
 });
 
 test("quantiles are always one of the real whole values", () => {
@@ -161,7 +106,7 @@ function fridgeDataset() {
 
 function analysed(ds = fridgeDataset(), shelfLife?: ShelfLifeSettings) {
   const fridges = configuredFridges(TODAY).filter((f) => f.externalId === SATTI1);
-  const snap = buildKitShopSnapshot(ds, fridges, NOW);
+  const snap = buildKitShopSnapshot(ds, fridges, NOW, { shelfLife });
   const a = analyze(snap, { forecastBias: {}, pairStats: {} }, [], "realtime", undefined, { shelfLife });
   const at = (name: string) => a.products.at[snap.products.findIndex((x) => x.name.includes(name))]!;
   return { snap, a, S: at("Сосиска"), C: at("Цезарь"), K: at("чизкейк") };

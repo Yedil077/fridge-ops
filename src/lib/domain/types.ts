@@ -1,3 +1,4 @@
+import type { StoredStat } from "../engine/productNorm";
 /**
  * Domain types shared by the engine, the data sources and the UI.
  *
@@ -152,46 +153,25 @@ export interface DataCheck {
   detail: string;
 }
 
-/** Fridge × dish × day facts that sales alone cannot give. Arrays are F*P*D (index (f * P + p) * D + d). */
+/** What the analytics adds to a snapshot of real data (arrays F*P are indexed f * P + p). */
 export interface ProductDays {
-  /** ESTIMATE (history + reconstruction): share of the fridge's sales made while the dish was there, 0..1; NaN = unknown */
-  avail: Float32Array;
-  /** ESTIMATE: times a sale took the last unit */
-  ranOut: Uint8Array;
-  /** ESTIMATE: stock at the end of the day; NaN = unknown */
-  eod: Float32Array;
-  /** FACT: the same from the 5-minute stock history only (NaN / 0 where there is no history) */
-  availFact: Float32Array;
-  ranOutFact: Uint8Array;
-  eodFact: Float32Array;
-  /** units loaded (FillupType 1) */
-  loaded: Float32Array;
-  /** units taken out by an unload (FillupType 2) — moves, returns, anything; NOT a write-off */
-  removed: Float32Array;
-  /** confirmed write-off (FillupType 3 «Списание») */
-  writtenOff: Float32Array;
-  /** F*P first day the dish appeared at the fridge (sale, load or stock); −1 = never */
-  firstDay: Int32Array;
-  /** loads / unloads are complete from this day (null = not read) */
-  fillupsFromDay: number | null;
-  /** stock is known (history or reconstruction) from this day (null = not known for any full day) */
-  stockKnownFromDay: number | null;
-  /** first day of the 5-minute stock history (null = not started) */
-  stockHistoryFromDay: number | null;
-  /** reconstruction steps clamped at 0 — movements that KiT Shop does not show */
-  reconstructionFixes: number;
-  /** fridges (names) whose loads in KiT Shop do not add up with their sales → no reconstruction there, stock history only */
-  unbalanced: string[];
-  /** how a write-off is recognised */
-  writeOffRule: string;
-  /** per fridge index: data checks (sales, ids, duplicates, stock freshness, timezone, completeness) */
+  /** the nightly result per dish and fridge (PostgreSQL product_shop_stats); undefined = not seen by the job */
+  stats: (StoredStat | undefined)[];
+  /** movements of the last days (memory of the 5-minute sync): the stock's age, the delivery still selling */
+  recent: (ProductEvents | undefined)[];
+  recentFrom: number;
+  /** per fridge index: data checks (nightly + live) */
   checks: DataCheck[][];
-  /** F*P: every sale / load / unload / write-off of the dish in the fridge since `eventsFrom` (for the delivery batches) */
-  events: (ProductEvents | undefined)[];
-  /** receipts with lines and loads / unloads are complete from this moment (wall-clock ms) */
-  eventsFrom: number;
   /** per fridge index: the last 30 days (oldest first) — data / closed / GAP */
   continuity: DayStatus[][];
+  /** loads / unloads are complete from this day (null = not read) */
+  fillupsFromDay: number | null;
+  /** first day of the 5-minute stock history (null = not started) */
+  stockHistoryFromDay: number | null;
+  /** how a write-off is recognised */
+  writeOffRule: string;
+  /** when the nightly analytics ran (null = not yet) */
+  analysisAt: number | null;
 }
 
 // ───────────────────────── Engine outputs ─────────────────────────

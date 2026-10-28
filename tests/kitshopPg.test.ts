@@ -95,7 +95,7 @@ const opts = { backfillDays: 5, backfillChunksPerTick: 2, delayMs: 0, detailsPer
 test("cold start: empty Postgres → 'Данные загружаются' (no simulator); after the first sync → real snapshot", async () => {
   const db = new PGlite();
   const { reader } = fakeKitShop(makeSales());
-  const live = new KitShopLive({ repo: new PgKsRepo(poolOf(db)), reader, now: () => NOW, options: opts });
+  const live = new KitShopLive({ repo: new PgKsRepo(poolOf(db)), reader, now: () => NOW, options: opts, autoAnalytics: false });
   await live.ready();
   assert.equal(live.label(), "LOADING");
   await assert.rejects(live.snapshot(), /загружаются/);
@@ -110,13 +110,14 @@ test("cold start: empty Postgres → 'Данные загружаются' (no s
   assert.deepEqual(snap.categorizedBy, { group: 2, name: 0 });
   const t = await db.query<{ n: number }>("SELECT count(*)::int AS n FROM ks_stock");
   assert.equal(t.rows[0].n, 2);
+  await db.close();
 });
 
 test("restart: history is read from ks_* tables, backfill continues where it stopped, nothing is re-downloaded", async () => {
   const db = new PGlite();
   const sales = makeSales();
   const a = fakeKitShop(sales);
-  const live1 = new KitShopLive({ repo: new PgKsRepo(poolOf(db)), reader: a.reader, now: () => NOW, options: opts });
+  const live1 = new KitShopLive({ repo: new PgKsRepo(poolOf(db)), reader: a.reader, now: () => NOW, options: opts, autoAnalytics: false });
   await live1.ready();
   await live1.syncNow();
   const before = (await live1.status()).progress;
@@ -125,14 +126,14 @@ test("restart: history is read from ks_* tables, backfill continues where it sto
 
   // "restart": a new process, same database
   const b = fakeKitShop(sales);
-  const live2 = new KitShopLive({ repo: new PgKsRepo(poolOf(db)), reader: b.reader, now: () => NOW + 5 * 60_000, options: opts });
+  const live2 = new KitShopLive({ repo: new PgKsRepo(poolOf(db)), reader: b.reader, now: () => NOW + 5 * 60_000, options: opts, autoAnalytics: false });
   await live2.ready();
   const loaded = await live2.status();
   assert.equal(loaded.counts.sales, before.receipts, "receipts come from Postgres");
   assert.equal(loaded.progress.daysDone, 3, "backfill position survived the restart");
   await live2.syncNow();
-  // new-sales request starts at the last sync − 15 min overlap, not 180 days back
-  assert.equal(b.log.getSales[0].from, NOW - 15 * 60_000);
+  // new-sales request starts at the last sync − 2 min overlap, not 180 days back
+  assert.equal(b.log.getSales[0].from, NOW - 2 * 60_000);
   // history continues from the persisted backfill point (NOW − 3 days) — never from today again
   const history = b.log.getSales.slice(1);
   assert.ok(history.length > 0 && history.every((q) => q.to <= NOW - 3 * DAY + 1), JSON.stringify(history));
@@ -142,14 +143,15 @@ test("restart: history is read from ks_* tables, backfill continues where it sto
   const after = (await live2.status()).progress;
   assert.equal(after.daysDone, 5);
   assert.ok(after.receiptsDetailed > detailedBefore);
+  await db.close();
 });
 
-test("duplicates: the 15-minute overlap and repeated ticks never store a receipt or a position twice", async () => {
+test("duplicates: the overlap and repeated ticks never store a receipt or a position twice", async () => {
   const db = new PGlite();
   const sales = makeSales(2);
   const { reader } = fakeKitShop(sales);
   let now = NOW;
-  const live = new KitShopLive({ repo: new PgKsRepo(poolOf(db)), reader, now: () => now, options: { ...opts, backfillDays: 3 } });
+  const live = new KitShopLive({ repo: new PgKsRepo(poolOf(db)), reader, now: () => now, options: { ...opts, backfillDays: 3 }, autoAnalytics: false });
   await live.ready();
   for (let i = 0; i < 4; i++) {
     await live.syncNow();
@@ -168,6 +170,7 @@ test("duplicates: the 15-minute overlap and repeated ticks never store a receipt
   const again = await db.query<{ n: number; d: boolean }>("SELECT count(*)::int AS n, bool_and(detailed) AS d FROM ks_sales WHERE sale_id = $1", [sales.at(-1)!.id]);
   assert.equal(again.rows[0].n, 1);
   assert.equal(again.rows[0].d, true, "an upsert never resets 'detailed'");
+  await db.close();
 });
 
 test("GetSaleById failure: the receipt waits for a retry (persisted), the rest of the sync goes on", async () => {
@@ -176,7 +179,7 @@ test("GetSaleById failure: the receipt waits for a retry (persisted), the rest o
   const failIds = new Set([sales.at(-1)!.id]); // the newest receipt fails
   const { reader, log } = fakeKitShop(sales, { failIds });
   let now = NOW;
-  const live = new KitShopLive({ repo: new PgKsRepo(poolOf(db)), reader, now: () => now, options: { ...opts, backfillDays: 1 } });
+  const live = new KitShopLive({ repo: new PgKsRepo(poolOf(db)), reader, now: () => now, options: { ...opts, backfillDays: 1 }, autoAnalytics: false });
   await live.ready();
   const t1 = await live.syncNow();
   const step = t1.steps.find((s) => s.step === "GetSaleById")!;
@@ -199,12 +202,13 @@ test("GetSaleById failure: the receipt waits for a retry (persisted), the rest o
   await live.syncNow();
   const fixed = await db.query<{ d: boolean }>("SELECT detailed AS d FROM ks_sales WHERE sale_id = $1", [sales.at(-1)!.id]);
   assert.equal(fixed.rows[0].d, true);
+  await db.close();
 });
 
 test("GetSaleById: a run of failures (KiT Shop down) ends the detail step of this tick early", async () => {
   const sales = makeSales(0);
   const { reader, log } = fakeKitShop(sales, { failIds: new Set(sales.map((s) => s.id)) });
-  const live = new KitShopLive({ repo: new PgKsRepo(poolOf(new PGlite())), reader, now: () => NOW, options: { ...opts, backfillDays: 1 } });
+  const live = new KitShopLive({ repo: new PgKsRepo(poolOf(new PGlite())), reader, now: () => NOW, options: { ...opts, backfillDays: 1 }, autoAnalytics: false });
   await live.ready();
   const t = await live.syncNow();
   assert.equal(t.steps.find((s) => s.step === "GetSaleById")!.ok, false);
@@ -223,12 +227,12 @@ test("load limits: env is clamped to gentle values; never more than 2 parallel G
 
   const sales = makeSales(1);
   const one = fakeKitShop(sales, { latencyMs: 2 });
-  const l1 = new KitShopLive({ repo: new PgKsRepo(poolOf(new PGlite())), reader: one.reader, now: () => NOW, options: { ...opts, concurrency: 1 } });
+  const l1 = new KitShopLive({ repo: new PgKsRepo(poolOf(new PGlite())), reader: one.reader, now: () => NOW, options: { ...opts, concurrency: 1 }, autoAnalytics: false });
   await l1.ready();
   await l1.syncNow();
   assert.equal(one.log.maxInFlight, 1);
   const two = fakeKitShop(sales, { latencyMs: 2 });
-  const l2 = new KitShopLive({ repo: new PgKsRepo(poolOf(new PGlite())), reader: two.reader, now: () => NOW, options: { ...opts, concurrency: 50 } });
+  const l2 = new KitShopLive({ repo: new PgKsRepo(poolOf(new PGlite())), reader: two.reader, now: () => NOW, options: { ...opts, concurrency: 50 }, autoAnalytics: false });
   await l2.ready();
   await l2.syncNow();
   assert.equal(two.log.maxInFlight, 2);
@@ -242,8 +246,56 @@ test("load limits: env is clamped to gentle values; never more than 2 parallel G
     now: () => NOW,
     options: { ...opts, backfillDays: 1, delayMs: 250 },
     sleep: async (ms) => void pauses.push(ms),
+    autoAnalytics: false,
   });
   await l3.ready();
   await l3.syncNow();
   assert.ok(pauses.length >= three.log.getSaleById.length && pauses.every((p) => p === 250));
+});
+
+test("slim memory: after a restart only the last days are in memory; the nightly job reads the history from PostgreSQL", async () => {
+  const db = new PGlite();
+  const sales = makeSales(10);
+  const live1 = new KitShopLive({ repo: new PgKsRepo(poolOf(db)), reader: fakeKitShop(sales).reader, now: () => NOW, options: { ...opts, backfillDays: 12, backfillChunksPerTick: 20 }, autoAnalytics: false });
+  await live1.ready();
+  await live1.syncNow();
+  const total = (await db.query<{ n: number }>("SELECT count(*)::int AS n FROM ks_sales")).rows[0].n;
+  assert.equal(total, sales.length, "the whole history is in the database");
+
+  // restart: memory gets only the last KEEP_DAYS days
+  const live2 = new KitShopLive({ repo: new PgKsRepo(poolOf(db)), reader: fakeKitShop(sales).reader, now: () => NOW + 60_000, options: { ...opts, backfillDays: 12 }, autoAnalytics: false });
+  await live2.ready();
+  assert.ok(live2.ds.slim);
+  assert.ok(live2.ds.sales.size < total / 1.5, `memory ${live2.ds.sales.size} of ${total} receipts`);
+  assert.ok([...live2.ds.sales.values()].every((s) => s.soldAt >= NOW - 7 * DAY), "only recent receipts in memory");
+  const st = await live2.status();
+  assert.equal(st.counts.sales, total, "the totals come from the database");
+  assert.equal(st.memory.historyRowsInDb !== null && st.memory.historyRowsInDb >= total, true);
+
+  // the nightly job: 180 days per shop from SQL → stats and daily aggregates saved
+  const cache = await live2.runAnalyticsNow("test");
+  assert.ok(cache);
+  assert.equal(cache!.rowsRead.receipts, total, "every receipt read from PostgreSQL, shop by shop");
+  const stats = await db.query<{ n: number }>("SELECT count(*)::int AS n FROM product_shop_stats");
+  assert.ok(stats.rows[0].n > 0);
+  const daily = await db.query<{ n: number }>("SELECT count(*)::int AS n FROM product_shop_daily");
+  assert.ok(daily.rows[0].n > 0);
+  const saved = await db.query<{ n: number }>("SELECT count(*)::int AS n FROM analytics_cache");
+  assert.equal(saved.rows[0].n, 1);
+
+  // a restart takes the saved result at once — no recomputation
+  const live3 = new KitShopLive({ repo: new PgKsRepo(poolOf(db)), reader: fakeKitShop(sales).reader, now: () => NOW + 120_000, options: opts, autoAnalytics: false });
+  await live3.ready();
+  assert.equal(live3.analytics?.runAt, cache!.runAt);
+  assert.ok((await live3.snapshot()).productDays!.stats.some((x) => !!x), "norms from the saved result");
+
+  // Завтра: menu and the manager's own number are kept next to the recommendation
+  await live3.repo.setMenu("2026-10-14", [{ productId: "101", source: "вручную" }], [], "admin");
+  assert.deepEqual((await live3.repo.getMenu("2026-10-14")).map((m) => m.productId), ["101"]);
+  await live3.repo.upsertRecommendations("2026-10-14", [{ shopId: SHOPS[0], productId: "101", recommendedQty: 6, recMin: 6, recMax: 7, expectedLeft: 0, confidence: "MEDIUM", reason: null, updatedAt: 1 }]);
+  await live3.repo.setManual("2026-10-14", SHOPS[0], "101", 7, "admin");
+  await live3.repo.upsertRecommendations("2026-10-14", [{ shopId: SHOPS[0], productId: "101", recommendedQty: 5, recMin: 5, recMax: 6, expectedLeft: 1, confidence: "MEDIUM", reason: null, updatedAt: 2 }]);
+  const plan = await live3.repo.getPlan("2026-10-14");
+  assert.deepEqual([plan[0].recommendedQty, plan[0].manualQty, plan[0].manualBy], [5, 7, "admin"], "a new recommendation never overwrites the manager's number");
+  await db.close();
 });

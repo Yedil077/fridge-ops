@@ -90,9 +90,9 @@ test("the sync logs every 'new receipts' request: From/To sent, returned, min/ma
   now += 5 * 60_000;
   await sync.tick();
   const second = ds.state.lastNewSales!;
-  assert.equal(second.fromSent, "28.10.2026 12:45:00", "15-minute overlap");
-  assert.equal(second.returned, 8);
-  assert.equal(second.duplicates, 8, "the overlap is skipped, never stored twice");
+  assert.equal(second.fromSent, "28.10.2026 12:58:00", "2-minute overlap — never the whole day again");
+  assert.equal(second.returned, 2);
+  assert.equal(second.duplicates, 2, "the overlap is skipped, never stored twice");
   assert.equal(second.written, 0);
   assert.equal(second.badDate, 0);
 });

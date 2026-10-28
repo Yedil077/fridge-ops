@@ -4,6 +4,8 @@ import type { Fridge, NetworkSnapshot } from "../domain/types";
 import { KsDataset } from "../kitshop-data/dataset";
 import { FileKsRepo, PgKsRepo, type KsRepo } from "../kitshop-data/repo";
 import { buildKitShopSnapshot, isFood } from "../kitshop-data/snapshot";
+import { completeness, runAnalytics, type AnalyticsCache } from "../kitshop-data/analytics";
+import { emptyShelfLife, type ShelfLifeSettings } from "../config/shelfLife";
 import { KitShopSync, syncOptionsFromEnv, type SyncDeps, type SyncOptions, type TickResult } from "../kitshop-data/sync";
 import { configuredFridges } from "../simulator/model";
 import { dayNumber, wallClockNow } from "../time";
@@ -12,14 +14,18 @@ import { kitshopReader } from "./kitshopWrite";
 
 /**
  * Real KiT Shop data for every screen (DATA_SOURCE=kitshop). READ ONLY.
- *  • our PostgreSQL (ks_* tables) is the cache: screens always read it, so a KiT Shop outage shows CACHE, not an error;
- *  • a background loop syncs every 5 minutes; while the 180-day backfill / receipt details are behind it runs every 20 s;
+ *  • PostgreSQL (ks_* tables) is the source of truth; memory holds only catalog, current stock, the last days of receipts
+ *    and loads, and the nightly analytics result (norms, curves) — never the 180-day history;
+ *  • a background loop syncs every 5 minutes (only new receipts / stock); while the backfill is behind it runs every 20 s;
+ *  • the heavy analytics job runs once a day at 03:00 (and when there is no result yet or the shelf lives changed);
  *  • the simulator is never used here.
  */
 
 const TZ = process.env.APP_TIMEZONE || "Asia/Almaty";
 const SYNC_EVERY_MS = 5 * 60_000;
 const BACKLOG_EVERY_MS = 20_000;
+/** the nightly analytics job: from this local hour */
+const ANALYTICS_HOUR = 3;
 /** no fresh KiT Shop data for this long → the label switches to CACHE */
 export const STALE_AFTER_MS = 15 * 60_000;
 
@@ -39,6 +45,8 @@ export interface LiveStatus {
   backlog: { undetailed: number; backfillDaysLeft: number };
   progress: ReturnType<KitShopSync["progress"]>;
   errors24h: { count: number; last: { at: number; step: string; error: string }[] };
+  analytics: { runAt: number | null; ms: number | null; rowsRead: AnalyticsCache["rowsRead"] | null; running: boolean; lastError: string | null; nextAt: string };
+  memory: { rssMb: number; heapUsedMb: number; startupMs: number | null; rowsInMemory: number; historyRowsInDb: number | null };
   categorizedBy: { group: number; name: number } | null;
   lastTick: TickResult | null;
   running: boolean;
@@ -84,11 +92,20 @@ export class KitShopLive {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private cache: { key: string; snap: NetworkSnapshot } | null = null;
   private configured: Fridge[];
+  /** the nightly analytics result (from PostgreSQL after a restart) */
+  analytics: AnalyticsCache | null = null;
+  private job = { running: false, lastError: null as string | null, startedAt: null as number | null };
+  private shelfLife: () => ShelfLifeSettings = emptyShelfLife;
+  private startupMs: number | null = null;
 
   private now: () => number;
 
   /** deps are injectable for tests (PGlite repo, fake reader, fixed clock); production uses env + the shared transport */
-  constructor(deps: { repo?: KsRepo; reader?: SyncDeps["reader"]; now?: () => number; options?: Partial<SyncOptions>; sleep?: SyncDeps["sleep"] } = {}) {
+  /** the analytics job starts by itself (03:00 / first run); tests switch it off and call runAnalyticsNow() */
+  private autoAnalytics: boolean;
+
+  constructor(deps: { repo?: KsRepo; reader?: SyncDeps["reader"]; now?: () => number; options?: Partial<SyncOptions>; sleep?: SyncDeps["sleep"]; autoAnalytics?: boolean } = {}) {
+    this.autoAnalytics = deps.autoAnalytics ?? true;
     this.now = deps.now ?? (() => wallClockNow(TZ));
     this.repo = deps.repo ?? createRepo();
     this.configured = configuredFridges(dayNumber(this.now()));
@@ -104,9 +121,74 @@ export class KitShopLive {
       options: { ...syncOptionsFromEnv(), ...(deps.options ?? {}) },
       sleep: deps.sleep,
     });
-    this.loaded = this.repo.load(this.ds).catch((e) => {
-      console.error("[kitshop-sync] could not load the cache:", e instanceof Error ? e.message : e);
-    });
+    const t0 = Date.now();
+    this.loaded = this.repo
+      .load(this.ds)
+      .then(async () => {
+        this.analytics = await this.repo.loadAnalytics();
+        this.sync.repoStats = await this.repo.stats(this.ds, this.now() - 30 * 60_000);
+        this.startupMs = Date.now() - t0;
+        console.info(`[kitshop] started in ${this.startupMs} ms · in memory: ${this.ds.sales.size} receipts, ${this.ds.fillUps.size} fill-ups · analytics ${this.analytics ? `of ${new Date(this.analytics.runAt).toISOString().slice(0, 16)}` : "not computed yet"}`);
+      })
+      .catch((e) => {
+        console.error("[kitshop-sync] could not load the cache:", e instanceof Error ? e.message : e);
+      });
+  }
+
+  /** the shelf lives (Настройки) the analytics job uses */
+  setShelfLifeProvider(f: () => ShelfLifeSettings) {
+    this.shelfLife = f;
+  }
+
+  /**
+   * The heavy job: re-read yesterday, then 180 days per shop from PostgreSQL → norms, daily aggregates, checks → saved.
+   * Never runs twice at the same time; the day keeps working on the previous result meanwhile.
+   */
+  async runAnalyticsNow(reason: string): Promise<AnalyticsCache | null> {
+    if (this.job.running) return this.analytics;
+    this.job.running = true;
+    this.job.startedAt = Date.now();
+    try {
+      await this.loaded;
+      const now = this.now();
+      const today = dayNumber(now);
+      await this.sync.rereadDay((today - 1) * 86_400_000).catch((e) => console.warn("[analytics] re-read of yesterday failed:", e instanceof Error ? e.message : e));
+      const st = await this.repo.stats(this.ds, now - 30 * 60_000);
+      const c = completeness(this.ds.state, now, st.newestUndetailedSale, st.newestUndetailedFillUp);
+      const cache = await runAnalytics(
+        this.repo.history(this.ds),
+        { now, shopIds: this.configured.map((f) => f.externalId).filter((id) => this.ds.shops.has(id) || !this.ds.shops.size), ds: this.ds, ...c, shelfLife: this.shelfLife() },
+        (shop) => this.repo.saveShopAnalytics(shop, today),
+      );
+      await this.repo.saveAnalytics(cache);
+      this.analytics = cache;
+      this.cache = null;
+      this.job.lastError = null;
+      console.info(`[analytics] ${reason}: ${cache.ms} ms · read ${cache.rowsRead.receipts} receipts, ${cache.rowsRead.lines} lines, ${cache.rowsRead.fillupLines} fill-up lines`);
+      return cache;
+    } catch (e) {
+      this.job.lastError = e instanceof Error ? e.message : String(e);
+      console.error("[analytics] failed:", this.job.lastError);
+      return this.analytics;
+    } finally {
+      this.job.running = false;
+    }
+  }
+
+  /** after every sync tick: the nightly run (03:00), a first run, or a run after the shelf lives changed */
+  private maybeRunAnalytics() {
+    if (!this.autoAnalytics || this.job.running || this.ds.state.lastSuccessAt === null) return;
+    const now = this.now();
+    const a = this.analytics;
+    const hour = Math.floor((now % 86_400_000) / 3_600_000);
+    const reason = !a
+      ? "первый расчёт"
+      : a.shelfLifeKey !== JSON.stringify(this.shelfLife())
+        ? "изменены сроки годности"
+        : a.day < dayNumber(now) && hour >= ANALYTICS_HOUR
+          ? "ночной расчёт"
+          : null;
+    if (reason) void this.runAnalyticsNow(reason);
   }
 
   /** resolves when the cache (ks_* tables) has been loaded */
@@ -141,6 +223,7 @@ export class KitShopLive {
     if (failed.length) console.warn("[kitshop-sync] errors:", failed.map((s) => `${s.step}: ${s.error}`).join("; "));
     const behind = res.backlog.undetailed > 0 || res.backlog.backfillDaysLeft > 0;
     this.schedule(behind && res.ok ? BACKLOG_EVERY_MS : SYNC_EVERY_MS);
+    this.maybeRunAnalytics();
     return res;
   }
 
@@ -176,9 +259,11 @@ export class KitShopLive {
       );
     }
     const now = this.now();
-    const key = `${this.ds.version}:${Math.floor(now / 60_000)}`;
+    const key = `${this.ds.version}:${this.analytics?.runAt ?? 0}:${Math.floor(now / 60_000)}`;
     if (this.cache?.key === key) return this.cache.snap;
-    const snap = buildKitShopSnapshot(this.ds, this.configured, now);
+    // production: the nightly result (null until the first run); development file store without a result: computed here
+    const cache = this.analytics ?? (this.repo.kind === "postgres" ? null : undefined);
+    const snap = buildKitShopSnapshot(this.ds, this.configured, now, { cache, shelfLife: this.shelfLife() });
     this.cache = { key, snap };
     return snap;
   }
@@ -215,7 +300,11 @@ export class KitShopLive {
       lastFillupsSyncAt: st.lastFillupsSyncAt,
       lastError: st.lastError,
       lastErrorAt: st.lastErrorAt,
-      counts: this.ds.counts(this.now()),
+      counts: (() => {
+        const c = this.ds.counts(this.now());
+        const r = this.sync.repoStats;
+        return r ? { ...c, sales: r.receipts, salesDetailed: r.receiptsDetailed, salesRetrying: r.receiptsRetrying, positions: r.positions, units: r.units, oldestSale: r.oldestSale, newestSale: r.newestSale } : c;
+      })(),
       backlog: this.sync.backlog(),
       progress: this.sync.progress(),
       errors24h: (() => {
@@ -223,6 +312,26 @@ export class KitShopLive {
         return { count: list.length, last: list.slice(-5).reverse() };
       })(),
       categorizedBy: this.cache?.snap.categorizedBy ?? null,
+      analytics: {
+        runAt: this.analytics?.runAt ?? null,
+        ms: this.analytics?.ms ?? null,
+        rowsRead: this.analytics?.rowsRead ?? null,
+        running: this.job.running,
+        lastError: this.job.lastError,
+        nextAt: `ежедневно в 0${ANALYTICS_HOUR}:00`,
+      },
+      memory: (() => {
+        const m = process.memoryUsage();
+        let lines = 0;
+        for (const l of this.ds.positions.values()) lines += l.length;
+        return {
+          rssMb: Math.round(m.rss / 1_048_576),
+          heapUsedMb: Math.round(m.heapUsed / 1_048_576),
+          startupMs: this.startupMs,
+          rowsInMemory: this.ds.sales.size + lines + this.ds.fillUps.size,
+          historyRowsInDb: this.sync.repoStats?.historyRowsInDb ?? null,
+        };
+      })(),
       lastTick: this.sync.lastTick,
       running: this.sync.running,
       now: this.now(),

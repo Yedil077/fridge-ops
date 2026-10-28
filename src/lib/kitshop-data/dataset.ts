@@ -121,6 +121,8 @@ export interface KsSyncState {
   lastNewSales?: NewSalesLog | null;
   /** oldest wall-clock ms already listed through GetFillUps (fill-up backfill, like backfillFrom for receipts) */
   fillupsBackfillFrom?: number | null;
+  /** first moment the 5-minute stock history was written */
+  stockHistoryFrom?: number | null;
   /** oldest wall-clock ms already listed through GetSales (backfill goes back to now − KITSHOP_BACKFILL_DAYS) */
   backfillFrom: number | null;
   lastSuccessAt: number | null;
@@ -163,6 +165,13 @@ export class KsDataset {
   state: KsSyncState = emptySyncState();
   /** bumped on every change (snapshot cache key) */
   version = 0;
+  /**
+   * Production (PostgreSQL): only the RECENT days stay in memory — the history is in the database and read per shop /
+   * dish when needed. Development file store and tests keep everything (slim = false).
+   */
+  slim = false;
+  /** days of receipts / loads kept in memory when slim */
+  static readonly KEEP_DAYS = 6;
 
   touch() {
     this.version++;
@@ -181,6 +190,27 @@ export class KsDataset {
     const out: KsFillUp[] = [];
     for (const f of this.fillUps.values()) if (!f.detailed && (f.retryAt ?? 0) <= now) out.push(f);
     return out.sort((a, b) => (b.at ?? 0) - (a.at ?? 0)).slice(0, limit);
+  }
+
+  /** Slim mode: drops receipts / loads older than KEEP_DAYS from memory (they stay in PostgreSQL). */
+  prune(now: number): number {
+    if (!this.slim) return 0;
+    const from = now - KsDataset.KEEP_DAYS * 86_400_000;
+    let dropped = 0;
+    for (const [id, s] of this.sales)
+      if (s.soldAt < from) {
+        this.sales.delete(id);
+        this.positions.delete(id);
+        dropped++;
+      }
+    for (const [id, f] of this.fillUps)
+      if (f.at !== null && f.at < from) {
+        this.fillUps.delete(id);
+        this.fillUpLines.delete(id);
+        dropped++;
+      }
+    for (const [shop, cov] of this.stockCoverage) if (cov.length > 1) this.stockCoverage.set(shop, cov.slice(-1));
+    return dropped;
   }
 
   /** Records one GetShopStocks reading: appends changed quantities, extends (or opens) the 5-minute coverage period. */
@@ -208,9 +238,11 @@ export class KsDataset {
     for (const c of changes) {
       const h = hist.get(c.productId) ?? [];
       h.push({ at, qty: c.qty });
-      hist.set(c.productId, h);
+      // slim: the change log lives in PostgreSQL; memory needs only the last quantity to see the next change
+      hist.set(c.productId, this.slim ? h.slice(-1) : h);
     }
     this.stockHistory.set(shopId, hist);
+    if (changes.length && (this.state.stockHistoryFrom ?? null) === null) this.state.stockHistoryFrom = at;
     let coverage: [number, number];
     if (continues) {
       last[1] = at;

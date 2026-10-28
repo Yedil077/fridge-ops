@@ -495,6 +495,11 @@ function ProductDetail({ r, fridge, untilTime, onClose, mobile }: { r: Row; frid
               <Big label="новая поставка" value={r.plan.delivery > 0 ? `+${r.plan.delivery} шт.` : "не нужна"} tone={r.plan.delivery > 0 ? "crit" : "good"} />
             </div>
             {r.expiredNow > 0 && <p className="mt-2 text-[12px] font-semibold text-crit-ink">Старше срока годности ({r.shelfHours} ч): {pcs(r.expiredNow)} — снять.</p>}
+            {r.current && (
+              <p className="mt-2 text-[13px]">
+                Сегодня (текущая поставка {when(r.current.at)}): поставили <b>{pcs(r.current.loaded)}</b>, уже продано <b>{pcs(r.current.soldSoFar)}</b>
+              </p>
+            )}
           </section>
         )}
 

@@ -11,7 +11,7 @@ import { deliver, detectAlerts } from "./notifications";
 import { bootstrapUsers } from "./users";
 import { Simulator } from "../simulator/simulator";
 import { dayNumber, fmtHM, minuteOfDay, MINUTE_MS, wallClockNow, weekdayOf } from "../time";
-import { kitshopLive, type DataLabel } from "./kitshopLive";
+import { kitshopLive, kitshopLiveStarted, type DataLabel } from "./kitshopLive";
 import { OpsService } from "../kitshop-ops/service";
 import { resolveMapping, type CatalogItem, type MappingResult } from "../kitshop-ops/mapping";
 import type { KsOperation, OpLine, OpType } from "../kitshop-ops/types";
@@ -148,7 +148,8 @@ class Runtime {
         `[apps-holodosov] KiT Shop reading ${c.enabled ? "ON" : "OFF"} · company id ${c.companyId ? "set" : "MISSING"} · login ${c.login ? "set" : "MISSING"} · password ${c.password ? "set" : "MISSING"} · ${new URL(c.baseUrl).host}`,
       );
     }
-    if (rt.mode === "kitshop" || rt.shadow) kitshopLive(); // starts the 5-minute read-only sync
+    // starts the 5-minute read-only sync; the nightly analytics job uses the shelf lives from Настройки
+    if (rt.mode === "kitshop" || rt.shadow) kitshopLive().setShelfLifeProvider(() => rt.shelfLife());
     // in every mode: a sleeping free server makes the phone app open on "нет связи" while it wakes up (30–60 s)
     startKeepAlive();
     rt.save();
@@ -363,6 +364,9 @@ class Runtime {
     this.state.shelfLife = next;
     this.cache.clear();
     this.save();
+    // the norms depend on the shelf life: the analytics job runs again (in the background)
+    const live = kitshopLiveStarted();
+    if (live) void live.runAnalyticsNow("изменены сроки годности");
   }
 
   setUntilMinute(minute: number) {

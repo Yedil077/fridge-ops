@@ -267,22 +267,16 @@ async function run(j: JobState) {
     await live.ready();
     const ds = live.ds;
     const from60 = now - 60 * DAY;
-    let undetailedRecent = false;
+    // the history is read from the database per shop × dish (it is not kept in memory)
+    const history = live.repo.history(ds);
+    const st = await live.repo.stats(ds, now - 30 * 60_000);
+    const undetailedRecent = st.newestUndetailedSale !== null && st.newestUndetailedSale >= from60;
     const byShop: ShopSales["byShop"] = new Map();
-    for (const sale of ds.sales.values()) {
-      if (!sale.detailed) {
-        if (sale.soldAt >= from60) undetailedRecent = true;
-        continue;
-      }
-      const m = byShop.get(sale.shopId) ?? new Map();
-      for (const pos of ds.positions.get(sale.saleId) ?? []) {
-        const cur = m.get(pos.productId) ?? { last: 0, qty60: 0, qtyAll: 0 };
-        cur.last = Math.max(cur.last, sale.soldAt);
-        cur.qtyAll += pos.qty;
-        if (sale.soldAt >= from60) cur.qty60 += pos.qty;
-        m.set(pos.productId, cur);
-      }
-      byShop.set(sale.shopId, m);
+    const qty60 = new Map((await history.salesByShopProduct(from60, now)).map((r) => [`${r.shopId}|${r.productId}`, r.qty]));
+    for (const r of await history.salesByShopProduct(0, now)) {
+      const m = byShop.get(r.shopId) ?? new Map();
+      m.set(r.productId, { last: r.last, qty60: qty60.get(`${r.shopId}|${r.productId}`) ?? 0, qtyAll: r.qty });
+      byShop.set(r.shopId, m);
     }
     const coveredFrom = ds.state.backfillFrom;
     shopSales = { coveredFrom, complete60: coveredFrom !== null && coveredFrom <= from60 && !undetailedRecent, byShop };

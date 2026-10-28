@@ -1,6 +1,7 @@
 import "server-only";
-import { fillDirection } from "../kitshop-data/snapshot";
+import { fillDirection } from "../kitshop-data/fillDirection";
 import type { KsDataset } from "../kitshop-data/dataset";
+import { dsHistory, type HistorySource } from "../kitshop-data/history";
 import { dayNumber } from "../time";
 
 /**
@@ -97,7 +98,12 @@ export interface CompareRow {
   sheet: { sold: number; loaded: number; unloaded: number; writtenOff: number };
 }
 
-export async function compareWithSheet(ds: KsDataset, shopId: string, now: number, opts: { id?: string | null; fetcher?: Fetcher; days?: number } = {}) {
+export async function compareWithSheet(
+  ds: KsDataset,
+  shopId: string,
+  now: number,
+  opts: { id?: string | null; fetcher?: Fetcher; days?: number; history?: HistorySource } = {},
+) {
   const id = opts.id === undefined ? sheetId() : opts.id;
   if (!id) return { configured: false as const };
   const fetcher = opts.fetcher ?? defaultFetch;
@@ -106,9 +112,10 @@ export async function compareWithSheet(ds: KsDataset, shopId: string, now: numbe
   const from = to - days * DAY;
   const shop = Number(shopId);
   if (!Number.isFinite(shop)) throw new Error("ShopId не число");
+  // our copy of these days, read from the history (PostgreSQL in production)
+  const h = await (opts.history ?? dsHistory(ds)).shopHistory(shopId, from, to);
   // 1. the same receipts in both: their times (a timezone shift between the sheet and our copy)
-  const recent: { saleId: string; soldAt: number }[] = [];
-  for (const sale of ds.sales.values()) if (sale.shopId === shopId && sale.detailed && sale.soldAt >= from && sale.soldAt < to) recent.push({ saleId: sale.saleId, soldAt: sale.soldAt });
+  const recent = h.receipts.filter((r) => r.detailed).map((r) => ({ saleId: r.saleId, soldAt: r.at }));
   recent.sort((x, y) => y.soldAt - x.soldAt);
   const sample = recent.slice(0, 15);
   const timeDiffs: number[] = [];
@@ -152,23 +159,15 @@ export async function compareWithSheet(ds: KsDataset, shopId: string, now: numbe
   }
 
   // ours, the same whole days
-  let receiptsUndetailed = 0;
-  for (const s of ds.sales.values()) {
-    if (s.shopId !== shopId || s.soldAt < from || s.soldAt >= to) continue;
-    if (!s.detailed) receiptsUndetailed++;
-    for (const l of ds.positions.get(s.saleId) ?? []) row(l.productId).ours.sold += l.qty;
-  }
-  let fillupsUndetailed = 0;
-  for (const f of ds.fillUps.values()) {
-    if (f.shopId !== shopId || f.at === null || f.at < from || f.at >= to) continue;
-    if (!f.detailed) fillupsUndetailed++;
-    for (const l of ds.fillUpLines.get(f.fillupId) ?? []) {
-      const d = fillDirection(f.type, l.qty);
-      const r = row(l.productId).ours;
-      if (d.kind === "load") r.loaded += d.delta;
-      else if (d.kind === "writeoff") r.writtenOff -= d.delta;
-      else r.unloaded -= d.delta;
-    }
+  const receiptsUndetailed = h.receipts.filter((r) => !r.detailed).length;
+  for (const l of h.sales) row(l.productId).ours.sold += l.qty;
+  const fillupsUndetailed = 0;
+  for (const f of h.fills) {
+    const d = fillDirection(f.type, f.qty);
+    const r = row(f.productId).ours;
+    if (d.kind === "load") r.loaded += d.delta;
+    else if (d.kind === "writeoff") r.writtenOff -= d.delta;
+    else r.unloaded -= d.delta;
   }
 
   const all = [...rows.values()];

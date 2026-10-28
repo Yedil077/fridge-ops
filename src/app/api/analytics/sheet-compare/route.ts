@@ -15,5 +15,5 @@ export const GET = handle(async (req: Request) => {
   const snap = await rt.snapshot();
   const id = new URL(req.url).searchParams.get("fridge");
   const fr = snap.fridges.find((f) => f.id === id) ?? snap.fridges[0];
-  return { fridge: fr.name, ...(await compareWithSheet(live.ds, fr.externalId, snap.now)) };
+  return { fridge: fr.name, ...(await compareWithSheet(live.ds, fr.externalId, snap.now, { history: live.repo.history(live.ds) })) };
 });

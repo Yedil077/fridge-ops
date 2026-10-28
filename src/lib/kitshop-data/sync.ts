@@ -1,13 +1,14 @@
 import type { KitShopReadOnlyClient } from "@/services/kitshop/kitshopClient";
 import { kitshopDate, parseKitshopDate } from "@/services/kitshop/transport";
-import type { KsDataset, KsFillUp, KsFillUpLine, KsPosition, KsSale, NewSalesLog } from "./dataset";
-import type { KsRepo } from "./repo";
+import { KsDataset, type KsFillUp, type KsFillUpLine, type KsPosition, type KsSale, type NewSalesLog } from "./dataset";
+import type { KsRepo, RepoStats } from "./repo";
 
 /**
  * 5-minute READ-ONLY sync: KiT Shop → our database (the cache every screen reads).
  *  • catalog (GetShops + GetProducts + GetProductGroups): every 6 h or on demand;
  *  • stock (GetShopStocks) of our fridges: every tick (≥ 4.5 min apart);
- *  • new receipts (GetSales) since the last sync with a 15-min overlap — never the whole history again;
+ *  • new receipts (GetSales) since the last sync with a 2-min overlap — never the whole day again (the nightly job
+ *    re-reads yesterday once, so a late receipt is not lost);
  *  • backfill of KITSHOP_BACKFILL_DAYS (180) in 1-day GetSales chunks (API limit 60 days), newest first;
  *  • product lines (GetSaleById per receipt — the only documented product-level source), newest first, budgeted;
  *  • stock HISTORY: every GetShopStocks reading is kept as a change log (a row only when a quantity changed) plus the
@@ -70,7 +71,8 @@ export const DEFAULT_SYNC_OPTIONS: SyncOptions = {
   delayMs: 300,
   catalogEveryMs: 6 * 3_600_000,
   stockEveryMs: 4.5 * 60_000,
-  salesOverlapMs: 15 * 60_000,
+  /** new receipts: from the last sync minus this (late receipts of yesterday are re-read by the nightly job) */
+  salesOverlapMs: 2 * 60_000,
   maxTickMs: 4 * 60_000,
   maxConsecutiveFailures: 5,
   fillupChunkDays: 10,
@@ -128,12 +130,20 @@ export class KitShopSync {
     this.sleep = d.sleep ?? ((ms) => (ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve()));
   }
 
+  /** totals from the database (refreshed at the end of every tick) */
+  repoStats: RepoStats | null = null;
+
   backlog() {
     const target = this.d.now() - this.o.backfillDays * DAY;
     let undetailed = 0;
-    for (const s of this.d.ds.sales.values()) if (!s.detailed) undetailed++;
     let fillupsUndetailed = 0;
-    for (const f of this.d.ds.fillUps.values()) if (!f.detailed) fillupsUndetailed++;
+    if (this.repoStats) {
+      undetailed = this.repoStats.receiptsUndetailed;
+      fillupsUndetailed = this.repoStats.fillUpsUndetailed;
+    } else {
+      for (const s of this.d.ds.sales.values()) if (!s.detailed) undetailed++;
+      for (const f of this.d.ds.fillUps.values()) if (!f.detailed) fillupsUndetailed++;
+    }
     const from = this.d.ds.state.backfillFrom;
     const ff = this.d.ds.state.fillupsBackfillFrom ?? null;
     return {
@@ -149,16 +159,17 @@ export class KitShopSync {
   progress() {
     const b = this.backlog();
     const c = this.d.ds.counts(this.d.now());
+    const r = this.repoStats;
     return {
       daysTotal: this.o.backfillDays,
       daysDone: this.o.backfillDays - b.backfillDaysLeft,
       currentBackfillDate: this.d.ds.state.backfillFrom,
-      receipts: c.sales,
-      receiptsDetailed: c.salesDetailed,
-      receiptsRetrying: c.salesRetrying,
+      receipts: r?.receipts ?? c.sales,
+      receiptsDetailed: r?.receiptsDetailed ?? c.salesDetailed,
+      receiptsRetrying: r?.receiptsRetrying ?? c.salesRetrying,
       receiptsPending: b.undetailed,
-      items: c.positions,
-      units: c.units,
+      items: r?.positions ?? c.positions,
+      units: r?.units ?? c.units,
       limits: { concurrency: this.o.concurrency, delayMs: this.o.delayMs, backfillDays: this.o.backfillDays },
     };
   }
@@ -194,6 +205,19 @@ export class KitShopSync {
       receiptsLastHour: times.filter((t) => t > newest - 3_600_000).length,
       offsetMinutes: Math.round((this.d.timeOffsetMs ?? 0) / 60_000),
     };
+  }
+
+  /** Slim mode keeps only the last KEEP_DAYS days in memory. */
+  private inMemory(at: number) {
+    return !this.d.ds.slim || at >= this.d.now() - KsDataset.KEEP_DAYS * DAY;
+  }
+
+  /** Re-reads one whole day (nightly: yesterday) — receipts and loads that reached KiT Shop late. */
+  async rereadDay(dayStart: number): Promise<{ receipts: number; fillUps: number }> {
+    const q = this.ks({ from: dayStart, to: dayStart + DAY });
+    const receipts = await this.addSales(await this.d.reader.getSales(q));
+    const fillUps = this.d.reader.getFillUps ? await this.addFillUps(await this.d.reader.getFillUps(q)) : 0;
+    return { receipts, fillUps };
   }
 
   /** Adds receipts; a SaleId already known is never stored twice (overlap / backfill re-reads are free). */
@@ -233,7 +257,8 @@ export class KitShopSync {
         detailFailures: cur?.detailFailures ?? 0,
         retryAt: cur?.retryAt ?? null,
       };
-      ds.sales.set(sale.saleId, sale);
+      // slim (PostgreSQL): history goes only to the database (the upsert never resets `detailed`)
+      if (this.inMemory(soldAt)) ds.sales.set(sale.saleId, sale);
       fresh.push(sale);
     }
     if (fresh.length) {
@@ -265,11 +290,11 @@ export class KitShopSync {
         detailFailures: cur?.detailFailures ?? 0,
         retryAt: cur?.retryAt ?? null,
       };
-      ds.fillUps.set(f.fillupId, f);
+      if (at === null || this.inMemory(at)) ds.fillUps.set(f.fillupId, f);
       fresh.push(f);
       if (!f.detailed && lines.length) {
         await repo.saveFillUps([f]);
-        ds.fillUpLines.set(f.fillupId, lines);
+        if (ds.fillUps.has(f.fillupId)) ds.fillUpLines.set(f.fillupId, lines);
         f.detailed = true;
         await repo.saveFillUpLines(f.fillupId, lines);
       }
@@ -289,12 +314,13 @@ export class KitShopSync {
     let detailed = 0;
     let failed = 0;
     let consecutive = 0;
-    for (const f of ds.undetailedFillUps(this.o.fillupDetailsPerTick, now)) {
+    for (const q of await repo.undetailedFillUps(ds, this.o.fillupDetailsPerTick, now)) {
       if (Date.now() - t0 > this.o.maxTickMs || consecutive >= this.o.maxConsecutiveFailures) break;
+      const f = ds.fillUps.get(q.fillupId) ?? q;
       try {
         const d = await getById(f.fillupId);
         const lines = fillUpLines(f.fillupId, d?.Details);
-        ds.fillUpLines.set(f.fillupId, lines);
+        if (ds.fillUps.has(f.fillupId)) ds.fillUpLines.set(f.fillupId, lines);
         if (d?.Notes && !f.notes) f.notes = d.Notes;
         f.detailed = true;
         f.retryAt = null;
@@ -324,11 +350,12 @@ export class KitShopSync {
     const worker = async () => {
       while (next < batch.length && !stoppedBy) {
         if (Date.now() - t0 > this.o.maxTickMs) return;
-        const sale = batch[next++];
+        const q = batch[next++];
+        const sale = ds.sales.get(q.saleId) ?? q;
         try {
           const d = await reader.getSaleById(sale.saleId);
           const positions: KsPosition[] = (d?.Positions ?? []).map((p) => ({ saleId: sale.saleId, positionId: p.PositionId, productId: p.ProductId, qty: p.Quantity, price: p.Price ?? null }));
-          ds.positions.set(sale.saleId, positions);
+          if (ds.sales.has(sale.saleId)) ds.positions.set(sale.saleId, positions);
           sale.detailed = true;
           sale.retryAt = null;
           await repo.savePositions(sale.saleId, positions);
@@ -505,7 +532,7 @@ export class KitShopSync {
       }
 
       // 5. product lines, newest receipts first, within the budget; failed receipts wait for their retry time
-      const res = await this.detail(ds.undetailed(this.o.detailsPerTick, now), t0, now);
+      const res = await this.detail(await repo.undetailedSales(ds, this.o.detailsPerTick, now), t0, now);
       if (res.detailed) ds.touch();
       steps.push({
         step: "GetSaleById",
@@ -529,6 +556,9 @@ export class KitShopSync {
       ds.state.errors = [...(ds.state.errors ?? []), ...failedSteps.map((s) => ({ at: now, step: s.step, error: s.error ?? "ошибка" }))].slice(-100);
     } else ds.state.lastError = null;
     await repo.saveState(ds.state).catch(() => undefined);
+    // memory keeps only the recent days (slim); the database totals tell the backlog
+    ds.prune(now);
+    this.repoStats = await repo.stats(ds, now - 30 * 60_000).catch(() => this.repoStats);
     this.lastTick = { ok, steps, ms: Date.now() - t0, backlog: this.backlog() };
     return this.lastTick;
   }

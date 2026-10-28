@@ -14,6 +14,7 @@ const TABS = [
   { href: "/m", label: "Сегодня", icon: "🏠" },
   { href: "/m/tasks", label: "Перемещения", icon: "🔁" },
   { href: "/m/fridges", label: "Холодильники", icon: "🧊" },
+  { href: "/m/tomorrow", label: "Завтра", icon: "📅" },
   { href: "/m/analytics", label: "Аналитика", icon: "📊" },
 ];
 

@@ -10,6 +10,7 @@ const PUBLIC = ["/login", "/api/auth/login", "/api/health", "/manifest.webmanife
 const DESKTOP_AREAS: { prefix: string; role: "MANAGER" | "ADMIN" }[] = [
   { prefix: "/admin", role: "ADMIN" },
   { prefix: "/analytics", role: "MANAGER" },
+  { prefix: "/tomorrow", role: "MANAGER" },
   { prefix: "/fridges", role: "MANAGER" },
   { prefix: "/reports", role: "MANAGER" },
 ];

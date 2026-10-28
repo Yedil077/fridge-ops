@@ -115,7 +115,10 @@ test("stock history: every reading kept as a change log with its coverage; a gap
   const k = fake();
   const ds = new KsDataset();
   let now = NOW;
-  const sync = new KitShopSync({ reader: k.reader, repo: new PgKsRepo(pool), ds, now: () => now, ourShopIds: [SHOP], options: { backfillDays: 1, delayMs: 0 } });
+  // as in production: the dataset is loaded from PostgreSQL first (that switches memory to "recent only")
+  const repo = new PgKsRepo(pool);
+  await repo.load(ds);
+  const sync = new KitShopSync({ reader: k.reader, repo, ds, now: () => now, ourShopIds: [SHOP], options: { backfillDays: 1, delayMs: 0 } });
   await sync.tick(); // full state: 101=5, 102=2
   now += 5 * 60_000;
   k.stock.set("101", 4);
@@ -128,18 +131,23 @@ test("stock history: every reading kept as a change log with its coverage; a gap
   now += 2 * 3_600_000; // the sync was down for 2 hours
   await sync.tick(); // new period: full state again
 
-  const h = ds.stockHistory.get(SHOP)!;
-  assert.deepEqual(h.get("101")!.map((x) => x.qty), [5, 4, 4]);
-  assert.deepEqual(h.get("102")!.map((x) => x.qty), [2, 0]);
-  assert.deepEqual(ds.stockCoverage.get(SHOP), [
+  // the change log is in PostgreSQL; memory keeps only the last quantity of each dish (to see the next change)
+  const q = async (pid: string) => (await pool.query("SELECT quantity FROM ks_stock_history WHERE product_id = $1 ORDER BY captured_at", [pid])).rows.map((r) => Number(r.quantity));
+  assert.deepEqual(await q("101"), [5, 4, 4]);
+  assert.deepEqual(await q("102"), [2, 0]);
+  const cov = (await pool.query("SELECT from_at, to_at FROM ks_stock_coverage ORDER BY from_at")).rows.map((r) => [Number(r.from_at), Number(r.to_at)]);
+  assert.deepEqual(cov, [
     [NOW, NOW + 15 * 60_000],
     [NOW + 15 * 60_000 + 2 * 3_600_000, NOW + 15 * 60_000 + 2 * 3_600_000],
   ]);
   const rows = await pool.query("SELECT shop_id, product_id, captured_at, quantity FROM ks_stock_history ORDER BY captured_at, product_id");
   assert.equal(rows.rows.length, 5, "5 rows instead of 5 readings × 2 dishes");
+  assert.deepEqual(ds.stockHistory.get(SHOP)!.get("101")!.map((x) => x.qty), [4], "memory: the last quantity only");
+  assert.ok(ds.state.stockHistoryFrom === NOW);
 
+  // restart: the last quantity and the last coverage period come back (not the whole log)
   const ds2 = new KsDataset();
   await new PgKsRepo(pool).load(ds2);
-  assert.deepEqual(ds2.stockHistory.get(SHOP)!.get("101")!.map((x) => x.qty), [5, 4, 4]);
-  assert.deepEqual(ds2.stockCoverage.get(SHOP), ds.stockCoverage.get(SHOP));
+  assert.deepEqual(ds2.stockHistory.get(SHOP)!.get("101")!.map((x) => x.qty), [4]);
+  assert.deepEqual(ds2.stockCoverage.get(SHOP), [cov[1]]);
 });
