@@ -44,7 +44,7 @@ const NOW = t(TODAY, 13);
  *   delivery 3 days ago: 7 put, 4 sold, 3 still in the fridge (older than 48 h now).
  * «Салат Цезарь» (48 h): deliveries 7,7,6,7,6 → sold 6,7,6,5,6, the rest unloaded (type 2); today 3 put.
  * «Чизкейк» (72 h): 4 every 3 days, all 4 sold every time.
- * «Морс»: 1 put and 1 sold every day (the fridge works every day).
+ * «Морс»: 3 put and 3 sold every day (the fridge works every day).
  */
 function fridgeDataset() {
   const ds = new KsDataset();
@@ -65,8 +65,8 @@ function fridgeDataset() {
     ds.fillUpLines.set(id, [{ fillupId: id, lineId: "0", productId: pid, qty }]);
   };
   for (let d = TODAY - 40; d < TODAY; d++) {
-    fill(t(d, 7), "4", 1, 1);
-    sale(t(d, 12), "4");
+    fill(t(d, 7), "4", 3, 1);
+    for (const m of [0, 10, 20]) sale(t(d, 12, m), "4");
   }
   for (const d of [TODAY - 37, TODAY - 31, TODAY - 25, TODAY - 19, TODAY - 13, TODAY - 7]) {
     fill(t(d, 7), "1", 7, 1);

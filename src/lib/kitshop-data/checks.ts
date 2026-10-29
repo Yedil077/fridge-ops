@@ -51,7 +51,8 @@ export function continuityFrom(h: ShopHistory, now: number, historyFromDay: numb
       status = "GAP";
       note = `${undetailed.get(d)} чеков без состава`;
     } else if (c === 0) {
-      if (same.length && worked.length > same.length / 3) {
+      // a GAP only where this weekday usually has real sales (≥ 3 receipts) — "usually ~1" days are not gaps
+      if (same.length && worked.length > same.length / 3 && usual >= 3) {
         status = "GAP";
         note = `нет чеков, а в этот день недели обычно ~${usual}`;
       } else {
