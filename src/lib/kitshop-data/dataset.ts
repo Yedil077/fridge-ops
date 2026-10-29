@@ -128,6 +128,12 @@ export interface KsSyncState {
    * KITSHOP_TIME_OFFSET_MINUTES changes, the stored times are shifted once by the difference (KitShopLive).
    */
   timeOffsetAppliedMinutes?: number;
+  /**
+   * Days (day numbers) read again IN FULL through GetSales with the current time offset (manual re-read, the nightly
+   * re-read of yesterday): every receipt KiT Shop has for the day is in our copy, so a low / zero day is a fact
+   * (holiday, fridge closed), not a gap.
+   */
+  verifiedDays?: number[];
   /** oldest wall-clock ms already listed through GetSales (backfill goes back to now − KITSHOP_BACKFILL_DAYS) */
   backfillFrom: number | null;
   lastSuccessAt: number | null;

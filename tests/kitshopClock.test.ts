@@ -5,6 +5,7 @@ import { MemoryKsRepo } from "../src/lib/kitshop-data/repo";
 import { KitShopSync } from "../src/lib/kitshop-data/sync";
 import { clockDiagnostic } from "../src/lib/server/kitshopClock";
 import { dsHistory } from "../src/lib/kitshop-data/history";
+import { continuityFrom } from "../src/lib/kitshop-data/checks";
 
 /**
  * Time / new-receipt diagnostics on KiT Shop answers: raw SaleDateTime, our parsed time, the gap, the exact From/To
@@ -99,4 +100,26 @@ test("the sync logs every 'new receipts' request: From/To sent, returned, min/ma
   assert.equal(second.duplicates, 2, "the overlap is skipped, never stored twice");
   assert.equal(second.written, 0);
   assert.equal(second.badDate, 0);
+});
+
+test("a day re-read in full is reconciled with KiT Shop: a holiday with 1 receipt is a fact, not a DATA GAP", async () => {
+  const k = fakeKitShop(0);
+  const ds = new KsDataset();
+  const sync = new KitShopSync({ reader: k.reader, repo: new MemoryKsRepo(), ds, now: () => NOW, ourShopIds: [SHOP], options: { backfillDays: 1, delayMs: 0 } });
+  const DAY = 86_400_000;
+  const today = Math.floor(NOW / DAY);
+  await sync.rereadDay((today - 3) * DAY);
+  await sync.rereadDay(today * DAY);
+  assert.deepEqual(ds.state.verifiedDays, [today - 3], "only finished days count — today is still being sold");
+
+  // 4 weeks of ~20 receipts a day, then a holiday with 1 receipt
+  const receipts: { saleId: string; at: number; detailed: boolean; total: number | null; lines: string | null }[] = [];
+  for (let d = today - 60; d < today; d++)
+    for (let i = 0; i < (d === today - 3 ? 1 : 20); i++) receipts.push({ saleId: `${d}-${i}`, at: d * DAY + 10 * 3_600_000 + i * 60_000, detailed: true, total: 1, lines: null });
+  const h = { sales: [], receipts, fills: [] };
+  const plain = continuityFrom(h, NOW, today - 90).find((x) => x.day === today - 3)!;
+  assert.equal(plain.status, "GAP", "without the reconciliation: far fewer than usual → GAP");
+  const checked = continuityFrom(h, NOW, today - 90, new Set(ds.state.verifiedDays)).find((x) => x.day === today - 3)!;
+  assert.equal(checked.status, "DATA");
+  assert.match(checked.note, /сверено с KiT Shop/);
 });

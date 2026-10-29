@@ -153,6 +153,8 @@ export class KitShopLive {
     if (st.lastSalesSyncAt !== null) st.lastSalesSyncAt = Math.min(st.lastSalesSyncAt, restart);
     if (st.lastFillupsSyncAt !== null) st.lastFillupsSyncAt = Math.min(st.lastFillupsSyncAt, restart);
     st.clockProbe = null;
+    // read with the old offset: no longer proof
+    st.verifiedDays = [];
     await this.repo.saveState(st);
     console.warn(
       `[kitshop] KiT Shop time offset ${applied} → ${offsetMin} min: stored times shifted by ${offsetMin - applied} min (${moved.receipts} receipts, ${moved.fillUps} fill-ups); receipts since yesterday are read again`,

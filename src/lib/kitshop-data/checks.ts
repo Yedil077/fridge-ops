@@ -23,9 +23,10 @@ const ddmm = (day: number) => {
  * Continuity of the last 30 days: every day has receipts (DATA), or the fridge usually does not sell on that weekday
  * (CLOSED: at most a third of the same weekdays in the 8 weeks before had receipts), otherwise a GAP — receipts missing
  * while the fridge works, far fewer than on the same weekdays (< 20 %), receipts without lines, or a day before the
- * complete history.
+ * complete history. A day read again in full from KiT Shop (`verified`) is never a "too few receipts" gap: KiT Shop
+ * itself has exactly that many (a holiday such as 26.10).
  */
-export function continuityFrom(h: ShopHistory, now: number, historyFromDay: number): DayStatus[] {
+export function continuityFrom(h: ShopHistory, now: number, historyFromDay: number, verified: ReadonlySet<number> = new Set()): DayStatus[] {
   const today = dayNumber(now);
   const count = new Map<number, number>();
   const undetailed = new Map<number, number>();
@@ -50,6 +51,9 @@ export function continuityFrom(h: ShopHistory, now: number, historyFromDay: numb
     } else if ((undetailed.get(d) ?? 0) > 0) {
       status = "GAP";
       note = `${undetailed.get(d)} чеков без состава`;
+    } else if (verified.has(d) && (c === 0 || (usual >= 10 && c < 0.2 * usual))) {
+      status = c === 0 ? "CLOSED" : "DATA";
+      note = `${c} чеков — сверено с KiT Shop (обычно ~${usual}: праздник / не работал)`;
     } else if (c === 0) {
       // a GAP only where this weekday usually has real sales (≥ 3 receipts) — "usually ~1" days are not gaps
       if (same.length && worked.length > same.length / 3 && usual >= 3) {

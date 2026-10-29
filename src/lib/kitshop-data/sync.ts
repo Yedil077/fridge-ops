@@ -217,6 +217,13 @@ export class KitShopSync {
     const q = this.ks({ from: dayStart, to: dayStart + DAY });
     const receipts = await this.addSales(await this.d.reader.getSales(q));
     const fillUps = this.d.reader.getFillUps ? await this.addFillUps(await this.d.reader.getFillUps(q)) : 0;
+    // a finished day read in full: every receipt KiT Shop has for it is now ours
+    if (dayStart + DAY <= this.d.now()) {
+      const st = this.d.ds.state;
+      const day = Math.floor(dayStart / DAY);
+      st.verifiedDays = [...new Set([...(st.verifiedDays ?? []), day])].sort((a, b) => a - b).slice(-200);
+      await this.d.repo.saveState(st).catch(() => undefined);
+    }
     return { receipts, fillUps };
   }
 

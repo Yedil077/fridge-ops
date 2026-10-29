@@ -142,7 +142,7 @@ export function analyseShop(h: ShopHistory, shopId: string, ctx: JobContext): Sh
   const stock = ctx.ds.stock.get(shopId) ?? new Map<string, number>();
   for (const [pid, q] of stock) if (q > 0 && cat(pid).food) product(pid);
 
-  const continuity = continuityFrom(h, ctx.now, ctx.historyFromDay);
+  const continuity = continuityFrom(h, ctx.now, ctx.historyFromDay, new Set(ctx.ds.state.verifiedDays ?? []));
   const gapDays = new Set(continuity.filter((d) => d.status === "GAP").map((d) => d.day));
   const fillupsKnown = ctx.fillupsFromDay !== null && ctx.fillupsFromDay <= today - 30;
   const openDay = (day: number) => {
