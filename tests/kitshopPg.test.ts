@@ -299,3 +299,38 @@ test("slim memory: after a restart only the last days are in memory; the nightly
   assert.deepEqual([plan[0].recommendedQty, plan[0].manualQty, plan[0].manualBy], [5, 7, "admin"], "a new recommendation never overwrites the manager's number");
   await db.close();
 });
+
+test("time offset corrected (KITSHOP_TIME_OFFSET_MINUTES 0 → 120): stored times shift once, the last days are read again", async () => {
+  const db = new PGlite();
+  const sales = makeSales(2);
+  const live1 = new KitShopLive({ repo: new PgKsRepo(poolOf(db)), reader: fakeKitShop(sales).reader, now: () => NOW, options: { ...opts, backfillDays: 3 }, autoAnalytics: false });
+  await live1.ready();
+  await live1.syncNow();
+  await live1.runAnalyticsNow("before");
+  const before = (await db.query<{ t: string }>("SELECT sold_at::text AS t FROM ks_sales WHERE sale_id = $1", [sales.at(-1)!.id])).rows[0].t;
+
+  const prev = process.env.KITSHOP_TIME_OFFSET_MINUTES;
+  process.env.KITSHOP_TIME_OFFSET_MINUTES = "120";
+  try {
+    const k = fakeKitShop(sales);
+    const live2 = new KitShopLive({ repo: new PgKsRepo(poolOf(db)), reader: k.reader, now: () => NOW + 60_000, options: { ...opts, backfillDays: 3 }, autoAnalytics: false });
+    await live2.ready();
+    const after = (await db.query<{ t: string }>("SELECT sold_at::text AS t FROM ks_sales WHERE sale_id = $1", [sales.at(-1)!.id])).rows[0].t;
+    assert.equal(Number(after) - Number(before), 120 * 60_000, "every stored receipt moved by +120 min");
+    assert.equal((await db.query<{ n: number }>("SELECT count(*)::int AS n FROM analytics_cache")).rows[0].n, 0, "the old nightly result is dropped");
+    assert.equal(live2.ds.state.timeOffsetAppliedMinutes, 120);
+    await live2.syncNow();
+    // the "new receipts" request now starts at yesterday 00:00 (our clock) = 22:00 the day before in KiT Shop's clock
+    const first = k.log.getSales[0];
+    assert.equal(first.from, (Math.floor(NOW / DAY) - 1) * DAY - 2 * 60_000 - 120 * 60_000);
+    // a second restart with the same offset changes nothing
+    const live3 = new KitShopLive({ repo: new PgKsRepo(poolOf(db)), reader: fakeKitShop(sales).reader, now: () => NOW + 120_000, options: opts, autoAnalytics: false });
+    await live3.ready();
+    const again = (await db.query<{ t: string }>("SELECT sold_at::text AS t FROM ks_sales WHERE sale_id = $1", [sales.at(-1)!.id])).rows[0].t;
+    assert.equal(again, after);
+  } finally {
+    if (prev === undefined) delete process.env.KITSHOP_TIME_OFFSET_MINUTES;
+    else process.env.KITSHOP_TIME_OFFSET_MINUTES = prev;
+  }
+  await db.close();
+});

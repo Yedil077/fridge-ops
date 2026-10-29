@@ -123,6 +123,11 @@ export interface KsSyncState {
   fillupsBackfillFrom?: number | null;
   /** first moment the 5-minute stock history was written */
   stockHistoryFrom?: number | null;
+  /**
+   * The KiT Shop time offset (minutes) the stored receipt / load times were written with. When
+   * KITSHOP_TIME_OFFSET_MINUTES changes, the stored times are shifted once by the difference (KitShopLive).
+   */
+  timeOffsetAppliedMinutes?: number;
   /** oldest wall-clock ms already listed through GetSales (backfill goes back to now − KITSHOP_BACKFILL_DAYS) */
   backfillFrom: number | null;
   lastSuccessAt: number | null;
@@ -190,6 +195,13 @@ export class KsDataset {
     const out: KsFillUp[] = [];
     for (const f of this.fillUps.values()) if (!f.detailed && (f.retryAt ?? 0) <= now) out.push(f);
     return out.sort((a, b) => (b.at ?? 0) - (a.at ?? 0)).slice(0, limit);
+  }
+
+  /** Shifts the times of the receipts / loads in memory (a corrected KiT Shop time offset). */
+  shiftTimes(deltaMs: number) {
+    for (const s of this.sales.values()) s.soldAt += deltaMs;
+    for (const f of this.fillUps.values()) if (f.at !== null) f.at += deltaMs;
+    this.touch();
   }
 
   /** Slim mode: drops receipts / loads older than KEEP_DAYS from memory (they stay in PostgreSQL). */

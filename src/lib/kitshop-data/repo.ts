@@ -31,6 +31,8 @@ export interface KsRepo {
   markFillUpFailed(fillupId: string, failures: number, retryAt: number): Promise<void>;
   /** stock history: changed quantities at `at` + the 5-minute coverage period they belong to */
   saveStockChanges(shopId: string, changes: { productId: string; qty: number }[], at: number, coverage: [number, number]): Promise<void>;
+  /** a corrected KiT Shop time offset: every stored receipt / load time moves by deltaMs (once) */
+  shiftTimes(deltaMs: number): Promise<{ receipts: number; fillUps: number }>;
 
   /** where the history is read (PostgreSQL: SQL per shop / dish; others: the in-memory dataset) */
   history(ds: KsDataset): HistorySource;
@@ -194,6 +196,10 @@ export class MemoryKsRepo extends InMemoryOps implements KsRepo {
   async saveFillUpLines() {}
   async markFillUpFailed() {}
   async saveStockChanges() {}
+  async shiftTimes() {
+    this.analytics = null;
+    return { receipts: 0, fillUps: 0 };
+  }
 }
 
 // ───────────────────────── PostgreSQL ─────────────────────────
@@ -652,6 +658,25 @@ export class PgKsRepo implements KsRepo {
     await this.pool.query("UPDATE ks_fillups SET detail_failures = $2, retry_at = $3 WHERE fillup_id = $1", [fillupId, failures, retryAt]);
   }
 
+  async shiftTimes(deltaMs: number) {
+    await this.ready;
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const s = await client.query("UPDATE ks_sales SET sold_at = sold_at + $1", [deltaMs]);
+      const f = await client.query("UPDATE ks_fillups SET at = at + $1 WHERE at IS NOT NULL", [deltaMs]);
+      // the nightly result was computed on the old times
+      await client.query("DELETE FROM analytics_cache");
+      await client.query("COMMIT");
+      return { receipts: s.rowCount ?? 0, fillUps: f.rowCount ?? 0 };
+    } catch (e) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw e;
+    } finally {
+      client.release();
+    }
+  }
+
   async saveStockChanges(shopId: string, changes: { productId: string; qty: number }[], at: number, coverage: [number, number]) {
     if (changes.length)
       await this.upsert("ks_stock_history", ["shop_id", "product_id", "captured_at", "quantity"], changes.map((c) => [shopId, c.productId, at, c.qty]),
@@ -794,5 +819,12 @@ export class FileKsRepo extends InMemoryOps implements KsRepo {
   }
   async saveStockChanges() {
     this.schedule();
+  }
+  /** the dataset itself is shifted by KitShopLive; this store only saves it and forgets the old nightly result */
+  async shiftTimes() {
+    this.analytics = null;
+    this.persist();
+    this.schedule();
+    return { receipts: this.ds?.sales.size ?? 0, fillUps: this.ds?.fillUps.size ?? 0 };
   }
 }

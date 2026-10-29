@@ -125,6 +125,7 @@ export class KitShopLive {
     this.loaded = this.repo
       .load(this.ds)
       .then(async () => {
+        await this.applyTimeOffset(offsetMin);
         this.analytics = await this.repo.loadAnalytics();
         this.sync.repoStats = await this.repo.stats(this.ds, this.now() - 30 * 60_000);
         this.startupMs = Date.now() - t0;
@@ -133,6 +134,29 @@ export class KitShopLive {
       .catch((e) => {
         console.error("[kitshop-sync] could not load the cache:", e instanceof Error ? e.message : e);
       });
+  }
+
+  /**
+   * KITSHOP_TIME_OFFSET_MINUTES changed since the stored times were written: shift them once by the difference, re-read
+   * the last ~1.5 days with the right request windows, and drop the nightly result (it was computed on the old times).
+   */
+  private async applyTimeOffset(offsetMin: number) {
+    const applied = this.ds.state.timeOffsetAppliedMinutes ?? 0;
+    if (applied === offsetMin) return;
+    const delta = (offsetMin - applied) * 60_000;
+    const moved = await this.repo.shiftTimes(delta);
+    // file / memory stores keep the times only in the dataset; PostgreSQL also has the recent days in memory
+    this.ds.shiftTimes(delta);
+    const st = this.ds.state;
+    st.timeOffsetAppliedMinutes = offsetMin;
+    const restart = (dayNumber(this.now()) - 1) * 86_400_000;
+    if (st.lastSalesSyncAt !== null) st.lastSalesSyncAt = Math.min(st.lastSalesSyncAt, restart);
+    if (st.lastFillupsSyncAt !== null) st.lastFillupsSyncAt = Math.min(st.lastFillupsSyncAt, restart);
+    st.clockProbe = null;
+    await this.repo.saveState(st);
+    console.warn(
+      `[kitshop] KiT Shop time offset ${applied} → ${offsetMin} min: stored times shifted by ${offsetMin - applied} min (${moved.receipts} receipts, ${moved.fillUps} fill-ups); receipts since yesterday are read again`,
+    );
   }
 
   /** the shelf lives (Настройки) the analytics job uses */
