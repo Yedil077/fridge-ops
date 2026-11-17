@@ -12,6 +12,8 @@ const Body = z.object({
   remove: z.array(z.string().regex(/^\d{1,18}$/)).max(200).default([]),
   /** copy the menu of another date */
   copyFrom: Day.optional(),
+  /** produced by the kitchen: productId → units (null = not given) */
+  supply: z.record(z.string().regex(/^\d{1,18}$/), z.number().int().min(0).max(100_000).nullable()).default({}),
 });
 
 /** The menu of a date (MANAGER+): Apps Холодосов never chooses dishes, it only counts how many. */
@@ -23,6 +25,7 @@ export const PUT = handle(async (req: Request) => {
   const add = b.add.map((productId) => ({ productId, source: "вручную" }));
   if (b.copyFrom) for (const m of await live.repo.getMenu(b.copyFrom)) add.push({ productId: m.productId, source: `копия ${b.copyFrom}` });
   await live.repo.setMenu(b.date, add, b.remove, user.name);
-  (await getRuntime()).ops.audit(user.name, "tomorrow.menu", "tomorrow", b.date, { add: add.map((a) => a.productId), remove: b.remove });
+  for (const [productId, qty] of Object.entries(b.supply)) await live.repo.setSupply(b.date, productId, qty);
+  (await getRuntime()).ops.audit(user.name, "tomorrow.menu", "tomorrow", b.date, { add: add.map((a) => a.productId), remove: b.remove, supply: b.supply });
   return { menu: await live.repo.getMenu(b.date) };
 });

@@ -4,7 +4,7 @@ import { KsDataset } from "../src/lib/kitshop-data/dataset";
 import { buildKitShopSnapshot } from "../src/lib/kitshop-data/snapshot";
 import { configuredFridges } from "../src/lib/simulator/model";
 import { analyze } from "../src/lib/engine/analysis";
-import { computeTomorrow } from "../src/lib/engine/tomorrow";
+import { allocateSupply, computeTomorrow } from "../src/lib/engine/tomorrow";
 
 /**
  * ЗАВТРА: the menu is given; the app only says how many — whole units, the norm minus what is still fresh tomorrow
@@ -114,4 +114,24 @@ test("red data checks (e.g. receipts from the future) → «Недостаточ
   assert.equal(c.qty, null);
   assert.equal(c.tag, "ДАННЫЕ НЕПОЛНЫЕ");
   assert.ok(c.reason.notes[0].startsWith("Недостаточно данных"));
+});
+
+test("a produced amount is split exactly: share of the need, whole units, closed fridges 0", () => {
+  const needs = [
+    { shopId: "A", need: 10, closed: false },
+    { shopId: "B", need: 6, closed: false },
+    { shopId: "C", need: 4, closed: false },
+    { shopId: "D", need: 8, closed: true },
+    { shopId: "E", need: null, closed: false },
+  ];
+  // less produced than needed (15 of 20): 7.5 / 4.5 / 3 → 8 / 4 / 3
+  const less = allocateSupply(needs, 15, () => 1);
+  assert.deepEqual(Object.fromEntries(less), { A: 8, B: 4, C: 3, D: 0, E: 0 });
+  // more than needed (26 of 20): 13 / 7.8 / 5.2 → 13 / 8 / 5
+  const more = allocateSupply(needs, 26, () => 1);
+  assert.deepEqual(Object.fromEntries(more), { A: 13, B: 8, C: 5, D: 0, E: 0 });
+  for (const s of [0, 1, 7, 15, 26, 101]) assert.equal([...allocateSupply(needs, s, () => 1).values()].reduce((a, x) => a + x, 0), s);
+  // a dish new everywhere → by the fridges' usual receipts
+  const fresh = allocateSupply([{ shopId: "A", need: null, closed: false }, { shopId: "B", need: null, closed: false }], 9, (s) => (s === "A" ? 80 : 40));
+  assert.deepEqual(Object.fromEntries(fresh), { A: 6, B: 3 });
 });

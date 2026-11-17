@@ -48,6 +48,8 @@ export interface KsRepo {
   /** Завтра: menu and the plan per date ("YYYY-MM-DD") */
   getMenu(date: string): Promise<MenuRow[]>;
   setMenu(date: string, add: { productId: string; source: string }[], remove: string[], by: string): Promise<void>;
+  /** how many of a dish the kitchen produced for that date (null = not given → the norms decide) */
+  setSupply(date: string, productId: string, qty: number | null): Promise<void>;
   getPlan(date: string): Promise<PlanRow[]>;
   upsertRecommendations(date: string, rows: Omit<PlanRow, "manualQty" | "manualBy" | "manualAt">[]): Promise<void>;
   setManual(date: string, shopId: string, productId: string, qty: number | null, by: string): Promise<void>;
@@ -76,6 +78,8 @@ export interface MenuRow {
   source: string;
   addedBy: string;
   addedAt: number;
+  /** produced by the kitchen for that date: exactly this many are split between the fridges */
+  supply?: number | null;
 }
 
 export interface PlanRow {
@@ -155,6 +159,11 @@ abstract class InMemoryOps {
     const cur = (this.menus.get(date) ?? []).filter((m) => !remove.includes(m.productId));
     for (const a of add) if (!cur.some((m) => m.productId === a.productId)) cur.push({ productId: a.productId, source: a.source, addedBy: by, addedAt: Date.now() });
     this.menus.set(date, cur);
+    this.persist();
+  }
+  async setSupply(date: string, productId: string, qty: number | null) {
+    const m = (this.menus.get(date) ?? []).find((x) => x.productId === productId);
+    if (m) m.supply = qty;
     this.persist();
   }
   async getPlan(date: string) {
@@ -267,6 +276,7 @@ CREATE TABLE IF NOT EXISTS tomorrow_menu (
   date DATE NOT NULL, product_id BIGINT NOT NULL, source TEXT NOT NULL, added_by TEXT NOT NULL, added_at BIGINT NOT NULL,
   PRIMARY KEY (date, product_id)
 );
+ALTER TABLE tomorrow_menu ADD COLUMN IF NOT EXISTS supply INTEGER;
 CREATE TABLE IF NOT EXISTS tomorrow_plan (
   date DATE NOT NULL, shop_id BIGINT NOT NULL, product_id BIGINT NOT NULL,
   recommended_qty INTEGER, rec_min INTEGER, rec_max INTEGER, expected_left INTEGER NOT NULL, confidence TEXT NOT NULL, reason JSONB,
@@ -529,8 +539,13 @@ export class PgKsRepo implements KsRepo {
 
   async getMenu(date: string): Promise<MenuRow[]> {
     await this.ready;
-    const r = await this.pool.query("SELECT product_id, source, added_by, added_at FROM tomorrow_menu WHERE date = $1 ORDER BY added_at", [date]);
-    return r.rows.map((x) => ({ productId: String(x.product_id), source: x.source, addedBy: x.added_by, addedAt: Number(x.added_at) }));
+    const r = await this.pool.query("SELECT product_id, source, added_by, added_at, supply FROM tomorrow_menu WHERE date = $1 ORDER BY added_at", [date]);
+    return r.rows.map((x) => ({ productId: String(x.product_id), source: x.source, addedBy: x.added_by, addedAt: Number(x.added_at), supply: num(x.supply) }));
+  }
+
+  async setSupply(date: string, productId: string, qty: number | null) {
+    await this.ready;
+    await this.pool.query("UPDATE tomorrow_menu SET supply = $3 WHERE date = $1 AND product_id = $2", [date, productId, qty]);
   }
 
   async setMenu(date: string, add: { productId: string; source: string }[], remove: string[], by: string) {

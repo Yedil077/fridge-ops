@@ -1,7 +1,7 @@
 import "server-only";
 import type { NetworkSnapshot } from "../domain/types";
 import type { AnalysisResult } from "../engine/analysis";
-import { computeTomorrow } from "../engine/tomorrow";
+import { allocateSupply, computeTomorrow } from "../engine/tomorrow";
 import type { KitShopLive } from "./kitshopLive";
 import { productCategory, isFood } from "../kitshop-data/analytics";
 import { parseCsv, sheetId } from "./sheetCompare";
@@ -24,20 +24,46 @@ export async function tomorrowView(live: KitShopLive, snap: NetworkSnapshot, a: 
   const date = isoDay(day);
   const menuRows = await live.repo.getMenu(date);
   const cache = live.analytics;
-  const cells = computeTomorrow({
-    snap,
-    forecasts: a.forecasts,
-    stats: a.products,
-    menu: menuRows.map((m) => `K${m.productId}`),
-    day,
-    receiptsByDay: cache
-      ? (shopId, d) => {
-          const r = cache.shops.get(shopId)?.receiptsByDay;
-          const i = d - cache.startDay;
-          return r && i >= 0 && i < r.length ? r[i] : null;
-        }
-      : undefined,
-  });
+  const receiptsByDay = cache
+    ? (shopId: string, d: number) => {
+        const r = cache.shops.get(shopId)?.receiptsByDay;
+        const i = d - cache.startDay;
+        return r && i >= 0 && i < r.length ? r[i] : null;
+      }
+    : undefined;
+  const computed = computeTomorrow({ snap, forecasts: a.forecasts, stats: a.products, menu: menuRows.map((m) => `K${m.productId}`), day, receiptsByDay });
+
+  // the kitchen produced a fixed amount → exactly that many, split by need (the computed number is kept as `need`)
+  const sameWeekday = (shopId: string) => {
+    const xs = [7, 14, 21, 28].map((w) => receiptsByDay?.(shopId, day - w) ?? null).filter((x): x is number => x !== null);
+    return xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : 0;
+  };
+  const cells = computed.map((c) => ({ ...c, need: c.qty, supplied: false }));
+  for (const m of menuRows) {
+    if (m.supply === null || m.supply === undefined) continue;
+    const mine = cells.filter((c) => c.productId === `K${m.productId}`);
+    const alloc = allocateSupply(
+      mine.map((c) => ({ shopId: c.shopId, need: c.qty, closed: c.tag === "НЕ РАБОТАЕТ" })),
+      m.supply,
+      sameWeekday,
+    );
+    const known = mine.some((c) => (c.qty ?? 0) > 0);
+    const needSum = mine.reduce((s, c) => s + (c.qty ?? 0), 0);
+    for (const c of mine) {
+      c.qty = alloc.get(c.shopId) ?? 0;
+      c.supplied = true;
+      if (c.tag !== "НЕ РАБОТАЕТ")
+        c.reason = {
+          ...c.reason,
+          notes: [
+            ...c.reason.notes,
+            known
+              ? `произведено ${m.supply} шт., нужно по всем холодильникам ${needSum} шт. → этой точке ${c.need ?? 0} из ${needSum} = ${c.qty} шт.`
+              : `произведено ${m.supply} шт., истории нет — поделено по обычному числу чеков точки в этот день недели (~${Math.round(sameWeekday(c.shopId))})`,
+          ],
+        };
+    }
+  }
 
   // keep what the system recommended (only when it changed)
   const rows = cells.map((c) => ({
@@ -62,7 +88,8 @@ export async function tomorrowView(live: KitShopLive, snap: NetworkSnapshot, a: 
   const menu = menuRows.map((m) => {
     const p = snap.products[pIdx.get(`K${m.productId}`) ?? -1];
     const cat = productCategory(live.ds, m.productId);
-    return { productId: m.productId, name: p?.name ?? cat.name, categoryId: p?.categoryId ?? cat.id, source: m.source };
+    const needSum = cells.filter((c) => c.productId === `K${m.productId}`).reduce((s, c) => s + (c.need ?? 0), 0);
+    return { productId: m.productId, name: p?.name ?? cat.name, categoryId: p?.categoryId ?? cat.id, source: m.source, supply: m.supply ?? null, needSum };
   });
   const fridges = snap.fridges.map((f) => ({ id: f.id, shopId: f.externalId, name: f.name, short: f.shortName ?? f.name }));
   const outCells = cells.map((c) => {

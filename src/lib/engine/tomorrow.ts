@@ -17,6 +17,10 @@ import { dayNumber, weekdayOf } from "../time";
  *   left   = what will still be FRESH tomorrow morning: today's units minus what sells for the rest of today (the oldest
  *            go first), without the units whose shelf life ends by then
  *   tomorrow = max(0, base − left);  0 when the fridge does not work on that weekday.
+ *
+ * When the kitchen already produced a FIXED amount of a dish (Произведено), exactly that amount is split between the
+ * fridges (allocateSupply): each fridge's share = its need (the number above) ÷ the sum of the needs — never each
+ * fridge's own norm added up.
  */
 
 export const TOMORROW_DELIVERY_HOUR = 7;
@@ -53,6 +57,33 @@ export interface TomorrowCell {
     notes: string[];
     today: { loaded: number; soldSoFar: number } | null;
   };
+}
+
+/**
+ * Splits `supply` units between the fridges in proportion to their need: whole units, the sum is exactly `supply`
+ * (largest remainder; a tie goes to the bigger need). Closed fridges get 0. When no fridge has a known need (a dish
+ * new everywhere), the split follows the fridges' usual receipts per day.
+ */
+export function allocateSupply(
+  needs: { shopId: string; need: number | null; closed: boolean }[],
+  supply: number,
+  volume: (shopId: string) => number,
+): Map<string, number> {
+  const open = needs.filter((n) => !n.closed);
+  let w = open.map((n) => ({ shopId: n.shopId, w: Math.max(0, n.need ?? 0) }));
+  if (!w.some((x) => x.w > 0)) w = open.map((n) => ({ shopId: n.shopId, w: Math.max(0, volume(n.shopId)) }));
+  const out = new Map(needs.map((n) => [n.shopId, 0]));
+  const W = w.reduce((a, x) => a + x.w, 0);
+  if (W <= 0 || supply <= 0) return out;
+  const parts = w.map((x) => ({ ...x, raw: (supply * x.w) / W }));
+  for (const p of parts) out.set(p.shopId, Math.floor(p.raw));
+  let rest = supply - parts.reduce((a, p) => a + Math.floor(p.raw), 0);
+  for (const p of [...parts].sort((a, b) => b.raw - Math.floor(b.raw) - (a.raw - Math.floor(a.raw)) || b.w - a.w)) {
+    if (rest <= 0) break;
+    out.set(p.shopId, out.get(p.shopId)! + 1);
+    rest--;
+  }
+  return out;
 }
 
 export function computeTomorrow(input: {

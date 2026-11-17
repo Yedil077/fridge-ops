@@ -92,6 +92,9 @@ export function TomorrowScreen({ mobile = false }: { mobile?: boolean }) {
                 <span className="font-semibold">{m.name}</span>
                 <span className="num whitespace-nowrap text-[15px] font-bold">{data.totals[m.productId]} шт.</span>
               </summary>
+              <div className="mt-2">
+                <SupplyInput view={data} productId={m.productId} supply={m.supply} needSum={m.needSum} canEdit={canEdit} />
+              </div>
               <div className="mt-2 grid grid-cols-2 gap-1 text-[13px]">
                 {data.fridges.map((f) => {
                   const c = cellOf(f.shopId, m.productId)!;
@@ -117,7 +120,8 @@ export function TomorrowScreen({ mobile = false }: { mobile?: boolean }) {
                     {f.short}
                   </th>
                 ))}
-                <th className="whitespace-nowrap bg-surface-2 text-right text-ink">Итого произвести</th>
+                <th className="whitespace-nowrap bg-surface-2 text-right text-ink">Итого</th>
+                <th className="whitespace-nowrap text-right">Произведено</th>
               </tr>
             </thead>
             <tbody>
@@ -137,6 +141,9 @@ export function TomorrowScreen({ mobile = false }: { mobile?: boolean }) {
                     );
                   })}
                   <td className="num bg-surface-2 text-right text-[15px] font-bold">{data.totals[m.productId]}</td>
+                  <td className="text-right">
+                    <SupplyInput view={data} productId={m.productId} supply={m.supply} needSum={m.needSum} canEdit={canEdit} />
+                  </td>
                 </tr>
               ))}
               <tr className="border-t-2 border-line text-ink-2">
@@ -147,6 +154,7 @@ export function TomorrowScreen({ mobile = false }: { mobile?: boolean }) {
                   </td>
                 ))}
                 <td className="num bg-surface-2 text-right text-[15px] font-bold text-ink">{data.grandTotal}</td>
+                <td />
               </tr>
             </tbody>
           </table>
@@ -154,11 +162,51 @@ export function TomorrowScreen({ mobile = false }: { mobile?: boolean }) {
       )}
       <p className="mt-2 text-[11px] text-ink-3">
         Целые штуки. Число = норма поставки этого блюда в этот холодильник (сколько обычно продаётся за срок годности) минус то, что будет ещё годным завтра утром. «?» — данных
-        нет, число решает менеджер. Жёлтое — низкая уверенность. ✎ — число изменено вручную (рекомендация сохранена).
+        нет, число решает менеджер. Жёлтое — низкая уверенность. ✎ — число изменено вручную (рекомендация сохранена). Если задано «Произведено», делится ровно это количество:
+        каждой точке по её доле в общей потребности.
       </p>
 
       {cell && <CellCard c={cell} view={data} canEdit={canEdit} onClose={() => setOpen(null)} mobile={mobile} />}
       {menuOpen && <MenuEditor view={data} onClose={() => setMenuOpen(false)} />}
+    </div>
+  );
+}
+
+function SupplyInput({ view, productId, supply, needSum, canEdit }: { view: TomorrowView; productId: string; supply: number | null; needSum: number; canEdit: boolean }) {
+  const qc = useQueryClient();
+  const [v, setV] = useState(supply === null ? "" : String(supply));
+  const [busy, setBusy] = useState(false);
+  useEffect(() => setV(supply === null ? "" : String(supply)), [supply]);
+  const save = async () => {
+    const qty = v === "" ? null : Number(v);
+    if (qty === supply) return;
+    setBusy(true);
+    try {
+      await api("/api/tomorrow/menu", { method: "PUT", body: JSON.stringify({ date: view.date, supply: { [productId]: qty } }) });
+      await qc.invalidateQueries({ queryKey: ["tomorrow"] });
+    } finally {
+      setBusy(false);
+    }
+  };
+  const hint = supply === null ? `нужно ~${needSum}` : supply < needSum ? `меньше нужного (${needSum})` : supply > needSum ? `больше нужного (${needSum})` : "ровно сколько нужно";
+  return (
+    <div className="flex items-center justify-end gap-1 whitespace-nowrap">
+      {canEdit ? (
+        <input
+          value={v}
+          disabled={busy}
+          onChange={(e) => setV(e.target.value.replace(/\D/g, ""))}
+          onBlur={save}
+          onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+          inputMode="numeric"
+          placeholder="—"
+          aria-label="Произведено, шт."
+          className="h-8 w-16 rounded-lg border border-line bg-surface px-2 text-right"
+        />
+      ) : (
+        <span className="num font-semibold">{supply ?? "—"}</span>
+      )}
+      <span className={clsx("text-[10px]", supply !== null && supply < needSum ? "text-warn" : "text-ink-3")}>{hint}</span>
     </div>
   );
 }
@@ -272,11 +320,12 @@ function CellCard({ c, view, canEdit, onClose, mobile }: { c: Cell; view: Tomorr
           <div>списание: {c.reason.writeOff}</div>
           {c.base !== null && <div>норма поставки: {c.base} шт.</div>}
           <div>ожидаемый годный остаток завтра утром: {c.expectedLeft} шт.</div>
-          {c.qty !== null && c.base !== null && (
-            <div className="font-semibold">
-              итог: {c.base} − {c.expectedLeft} = {c.qty} шт.
+          {c.need !== null && c.base !== null && (
+            <div className={clsx(!c.supplied && "font-semibold")}>
+              {c.supplied ? "нужно" : "итог"}: {c.base} − {c.expectedLeft} = {c.need} шт.
             </div>
           )}
+          {c.supplied && <div className="font-semibold">из произведённого этой точке: {c.qty} шт.</div>}
           {c.reason.today && (
             <div>
               сегодня: поставили {c.reason.today.loaded}, уже продано {c.reason.today.soldSoFar}
