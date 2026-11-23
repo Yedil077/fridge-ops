@@ -22,6 +22,7 @@ import type { CatalogProductInput } from "../kitshop-ops/types";
 import { newId } from "./pin";
 import { readKitShopConfig } from "@/services/kitshop/config";
 import { autoUnusedReport } from "./unusedReport";
+import { startMenuSheetSchedule, type MenuScheduleState } from "./menuSheet";
 
 /**
  * Server runtime: owns the data source (real KiT Shop copy in KITSHOP mode, simulator only in MOCK/dev mode), our app state,
@@ -154,6 +155,12 @@ class Runtime {
     if (rt.mode === "kitshop" || rt.shadow) kitshopLive().setShelfLifeProvider(() => rt.shelfLife());
     // in every mode: a sleeping free server makes the phone app open on "нет связи" while it wakes up (30–60 s)
     startKeepAlive();
+    // the kitchen's table (Google Drive, read only): tomorrow's plan of new product at 17:00 and 19:00
+    if (rt.mode === "kitshop")
+      menuSchedule = startMenuSheetSchedule(
+        () => kitshopLiveStarted()?.repo ?? null,
+        (what, data) => rt.ops.audit("система", what, "night", String(data.date ?? ""), data),
+      );
     rt.save();
     await rt.saving;
     // "что удалить из KiT Shop" Excel: rebuilt by the server once a day (read only), stored in the database
@@ -1056,6 +1063,10 @@ export class HttpError extends Error {
 const g = globalThis as unknown as { __fridgeOpsRuntime?: Promise<Runtime> };
 
 /** One runtime per server process, initialised from the store on first use. */
+let menuSchedule: MenuScheduleState | null = null;
+/** the automatic read of the menu table: what it did last (null when it is off) */
+export const menuScheduleState = () => menuSchedule;
+
 export function getRuntime(): Promise<Runtime> {
   if (!g.__fridgeOpsRuntime) {
     g.__fridgeOpsRuntime = Runtime.create().catch((e) => {

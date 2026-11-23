@@ -1,12 +1,13 @@
 "use client";
 
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
 import { api, atLeast, useMe } from "@/lib/client/api";
 import type { NightView } from "@/lib/server/nightView";
 
 type Stop = NightView["stops"][number];
+type Night = NightView & { sheet?: { connected: boolean; hours: number[]; last: { at: number; ok: boolean; text: string } | null } };
 
 const pad = (n: number) => String(n).padStart(2, "0");
 const ddmm = (iso: string) => `${iso.slice(8, 10)}.${iso.slice(5, 7)}`;
@@ -24,13 +25,25 @@ export function NightScreen({ mobile = false }: { mobile?: boolean }) {
   const [date, setDate] = useState<string | null>(null);
   const { data, error, isFetching } = useQuery({
     queryKey: ["night", date],
-    queryFn: () => api<NightView>(`/api/night${date ? `?date=${date}` : ""}`),
+    queryFn: () => api<Night>(`/api/night${date ? `?date=${date}` : ""}`),
     refetchInterval: 5 * 60_000,
   });
   const me = useMe().data;
   const manager = atLeast(me, "MANAGER");
   const [why, setWhy] = useState(false);
   const [hideEmpty, setHideEmpty] = useState(true);
+  const qc = useQueryClient();
+  const [reading, setReading] = useState<{ busy: boolean; text: string | null; ok: boolean }>({ busy: false, text: null, ok: true });
+  const readSheet = async (d: string) => {
+    setReading({ busy: true, text: null, ok: true });
+    try {
+      const r = await api<{ rows: number; units: number; changed: boolean }>("/api/night/plan/sync", { method: "POST", body: JSON.stringify({ date: d }) });
+      setReading({ busy: false, ok: true, text: `Таблица прочитана: ${r.rows} строк, ${r.units} шт.${r.changed ? " — план обновлён" : " — без изменений"}` });
+      await qc.invalidateQueries({ queryKey: ["night"] });
+    } catch (e) {
+      setReading({ busy: false, ok: false, text: (e as Error).message });
+    }
+  };
 
   if (error) return <p className="p-6 text-crit-ink">{(error as Error).message}</p>;
   if (!data) return <p className="p-6 text-ink-3">Собираю ночное задание…</p>;
@@ -70,10 +83,24 @@ export function NightScreen({ mobile = false }: { mobile?: boolean }) {
         </p>
       )}
       <p className="mt-2 text-[12px] text-ink-3">
-        {data.plan ? `План: ${data.plan.source} · ${data.plan.units} шт. · загружен ${hhmm(data.plan.importedAt)}. ` : ""}
+        {data.plan ? `План: ${data.plan.source} · ${data.plan.units} шт. · загружен ${hhmm(data.plan.importedAt)} (${data.plan.importedBy}). ` : ""}
         Остатки KiT Shop: {data.stockAt ? hhmm(data.stockAt) : "—"}.{" "}
         {data.draft ? "Черновик: до выезда ещё будут продажи, финальное задание — около 00:30." : ""}
       </p>
+      {manager && (
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-[12px]">
+          <button onClick={() => void readSheet(data.date)} disabled={reading.busy || data.sheet?.connected === false} className="rounded-lg bg-surface-2 px-3 py-1.5 text-[13px] font-medium disabled:opacity-50">
+            {reading.busy ? "Читаю таблицу…" : "Обновить из таблицы"}
+          </button>
+          <span className="text-ink-3">
+            {data.sheet?.connected
+              ? `Автоматически: ${data.sheet.hours.map((h) => `${pad(h)}:00`).join(" и ")} — план на завтра.`
+              : "Таблица не подключена (MENU_SHEET_ID на сервере)."}
+            {data.sheet?.last ? ` Последнее чтение ${hhmm(data.sheet.last.at)}: ${data.sheet.last.ok ? "" : "ошибка — "}${data.sheet.last.text}` : ""}
+          </span>
+          {reading.text && <span className={clsx("w-full", reading.ok ? "text-good-ink" : "text-crit-ink")}>{reading.text}</span>}
+        </div>
+      )}
       <div className="mt-2 flex flex-wrap gap-3 text-[13px]">
         <label className="flex items-center gap-1">
           <input type="checkbox" checked={hideEmpty} onChange={(e) => setHideEmpty(e.target.checked)} /> скрыть точки без действий

@@ -2,6 +2,7 @@ import { z } from "zod";
 import { handle, requireUser } from "@/lib/server/http";
 import { getRuntime, HttpError } from "@/lib/server/runtime";
 import { kitshopLiveStarted } from "@/lib/server/kitshopLive";
+import { wallClockNow } from "@/lib/time";
 
 export const dynamic = "force-dynamic";
 
@@ -34,7 +35,7 @@ export const PUT = handle(async (req: Request) => {
   const ours = new Set([...live.ds.shops.keys()]);
   const unknown = [...new Set(b.rows.map((r) => r.shopId).filter((s) => !ours.has(s)))];
   if (unknown.length) throw new HttpError(400, `Неизвестные холодильники: ${unknown.join(", ")}`);
-  await live.repo.setNightPlan(b.date, { source: b.source, importedAt: Date.now(), importedBy: user.name, rows: b.rows });
+  await live.repo.setNightPlan(b.date, { source: b.source, importedAt: wallClockNow(process.env.APP_TIMEZONE || "Asia/Almaty"), importedBy: user.name, rows: b.rows });
   (await getRuntime()).ops.audit(user.name, "night.plan", "night", b.date, { source: b.source, rows: b.rows.length, units: b.rows.reduce((a, r) => a + r.qty, 0) });
   return { ok: true, rows: b.rows.length };
 });
