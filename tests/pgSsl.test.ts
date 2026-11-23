@@ -36,3 +36,13 @@ test("a pasted ?sslmode=… is dropped when DATABASE_SSL decides", () => {
   assert.equal(pgUrl("postgresql://u:p@h:5432/postgres"), "postgresql://u:p@h:5432/postgres");
   delete process.env.DATABASE_SSL;
 });
+
+test("the startup line never shows a password, and says what is wrong with a pasted string", () => {
+  process.env.DATABASE_SSL = "true";
+  const s = pgSslSummary("postgresql://postgres.ref:[se@cret]@aws-0-eu-central-1.pooler.supabase.com:5432/postgres");
+  assert.match(s, /host=aws-0-eu-central-1\.pooler\.supabase\.com /);
+  assert.ok(!s.includes("se@cret") && !s.includes("cret"), s);
+  assert.match(s, /2 знака @/);
+  assert.match(s, /\[ \]/);
+  delete process.env.DATABASE_SSL;
+});

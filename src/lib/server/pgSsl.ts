@@ -30,6 +30,9 @@ export function pgUrl(url: string): string {
 export function pgSslSummary(url: string | undefined): string {
   const ssl = pgSsl();
   const sslmode = url ? (/[?&]sslmode=([^&]+)/.exec(url)?.[1] ?? "нет") : "нет";
-  const host = url ? (/@([^:/?]+)/.exec(url)?.[1] ?? "?") : "?";
-  return `db host=${host} · ssl=${ssl ? "on" : "off"} · strict=${typeof ssl === "object" ? ssl.rejectUnauthorized !== false : "-"} · ca=${process.env.DATABASE_SSL_CA ? "yes" : "no"} · sslmode в строке=${sslmode}`;
+  // the host follows the LAST "@" — a password with "@" in it must never reach the log
+  const host = url && url.includes("@") ? (/^([^:/?]+)/.exec(url.slice(url.lastIndexOf("@") + 1))?.[1] ?? "?") : "?";
+  const at = url ? (url.match(/@/g) ?? []).length : 0;
+  const brackets = url ? /[[\]]/.test(url) : false;
+  return `db host=${host} · ssl=${ssl ? "on" : "off"} · strict=${typeof ssl === "object" ? ssl.rejectUnauthorized !== false : "-"} · ca=${process.env.DATABASE_SSL_CA ? "yes" : "no"} · sslmode в строке=${sslmode}${at > 1 ? ` · ВНИМАНИЕ: в строке ${at} знака @ — в пароле @ (замените пароль на буквы и цифры)` : ""}${brackets ? " · ВНИМАНИЕ: в строке остались [ ] — уберите скобки вокруг пароля" : ""}`;
 }
