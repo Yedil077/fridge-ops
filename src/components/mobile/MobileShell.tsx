@@ -12,6 +12,7 @@ import { DataSourceBadge } from "@/components/DataSourceBadge";
 
 const TABS = [
   { href: "/m", label: "Главная", icon: "🏠" },
+  { href: "/m/night", label: "Ночь", icon: "🌙" },
   { href: "/m/tomorrow", label: "Tomorrow", icon: "📅" },
   { href: "/m/tasks", label: "Перемещения", icon: "🔁" },
   { href: "/m/fridges", label: "Холодильники", icon: "🧊" },
@@ -122,14 +123,14 @@ export function MobileShell({ children, now, title, back }: { children: ReactNod
       <main className="mx-auto max-w-xl px-4 pt-4">{children}</main>
 
       <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-surface/95 pb-[env(safe-area-inset-bottom)] backdrop-blur">
-        <div className="mx-auto grid max-w-xl grid-cols-4">
+        <div className="mx-auto grid max-w-xl" style={{ gridTemplateColumns: `repeat(${TABS.length}, minmax(0, 1fr))` }}>
           {TABS.map((t) => {
             const active = t.href === "/m" ? path === "/m" : path.startsWith(t.href);
             return (
               <Link
                 key={t.href}
                 href={t.href}
-                className={clsx("flex h-[64px] flex-col items-center justify-center gap-0.5 text-[11px]", active ? "text-ink" : "text-ink-3")}
+                className={clsx("flex h-[64px] min-w-0 flex-col items-center justify-center gap-0.5 truncate text-[10px]", active ? "text-ink" : "text-ink-3")}
               >
                 <span className={clsx("text-[22px] leading-none", !active && "opacity-60 grayscale")}>{t.icon}</span>
                 <span className={clsx(active && "font-semibold")}>{t.label}</span>

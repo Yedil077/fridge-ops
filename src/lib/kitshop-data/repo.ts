@@ -53,6 +53,17 @@ export interface KsRepo {
   getPlan(date: string): Promise<PlanRow[]>;
   upsertRecommendations(date: string, rows: Omit<PlanRow, "manualQty" | "manualBy" | "manualAt">[]): Promise<void>;
   setManual(date: string, shopId: string, productId: string, qty: number | null, by: string): Promise<void>;
+  /** НОЧЬ: the kitchen's table of new product for a delivery date, as read (never edited here) */
+  getNightPlan(date: string): Promise<NightPlan | null>;
+  setNightPlan(date: string, plan: NightPlan): Promise<void>;
+}
+
+export interface NightPlan {
+  /** where it came from ("Каспи Меню по неделям, 24.11.2026 Tuesday") */
+  source: string;
+  importedAt: number;
+  importedBy: string;
+  rows: { shopId: string; name: string; productId: string | null; group: string; qty: number }[];
 }
 
 export interface RepoStats {
@@ -102,6 +113,14 @@ abstract class InMemoryOps {
   protected analytics: AnalyticsCache | null = null;
   protected menus = new Map<string, MenuRow[]>();
   protected plans = new Map<string, Map<string, PlanRow>>();
+  protected nightPlans = new Map<string, NightPlan>();
+  async getNightPlan(date: string) {
+    return this.nightPlans.get(date) ?? null;
+  }
+  async setNightPlan(date: string, plan: NightPlan) {
+    this.nightPlans.set(date, plan);
+    this.persist();
+  }
   history(ds: KsDataset): HistorySource {
     return dsHistory(ds);
   }
@@ -277,6 +296,7 @@ CREATE TABLE IF NOT EXISTS tomorrow_menu (
   PRIMARY KEY (date, product_id)
 );
 ALTER TABLE tomorrow_menu ADD COLUMN IF NOT EXISTS supply INTEGER;
+CREATE TABLE IF NOT EXISTS night_plan (date DATE PRIMARY KEY, data JSONB NOT NULL, updated_at BIGINT NOT NULL);
 CREATE TABLE IF NOT EXISTS tomorrow_plan (
   date DATE NOT NULL, shop_id BIGINT NOT NULL, product_id BIGINT NOT NULL,
   recommended_qty INTEGER, rec_min INTEGER, rec_max INTEGER, expected_left INTEGER NOT NULL, confidence TEXT NOT NULL, reason JSONB,
@@ -590,6 +610,20 @@ export class PgKsRepo implements KsRepo {
     );
   }
 
+  async getNightPlan(date: string): Promise<NightPlan | null> {
+    await this.ready;
+    const r = await this.pool.query("SELECT data FROM night_plan WHERE date = $1", [date]);
+    return r.rows[0]?.data ?? null;
+  }
+
+  async setNightPlan(date: string, plan: NightPlan) {
+    await this.ready;
+    await this.pool.query(
+      "INSERT INTO night_plan (date, data, updated_at) VALUES ($1, $2, $3) ON CONFLICT (date) DO UPDATE SET data = EXCLUDED.data, updated_at = EXCLUDED.updated_at",
+      [date, JSON.stringify(plan), Date.now()],
+    );
+  }
+
   /** Multi-row upsert in chunks (keeps each statement small). */
   private async upsert(table: string, cols: string[], rows: unknown[][], conflict: string, update: string) {
     await this.ready;
@@ -725,6 +759,7 @@ export class FileKsRepo extends InMemoryOps implements KsRepo {
       this.analytics = raw.analytics ? deserializeCache(raw.analytics) : null;
       this.menus = new Map(Object.entries(raw.menus ?? {}));
       this.plans = new Map(Object.entries(raw.plans ?? {}).map(([d, rows]) => [d, new Map((rows as PlanRow[]).map((r) => [`${r.shopId}|${r.productId}`, r]))]));
+      this.nightPlans = new Map(Object.entries(raw.nightPlans ?? {}));
     } catch {
       /* first start */
     }
@@ -738,6 +773,7 @@ export class FileKsRepo extends InMemoryOps implements KsRepo {
       analytics: this.analytics ? serializeCache(this.analytics) : null,
       menus: Object.fromEntries(this.menus),
       plans: Object.fromEntries([...this.plans].map(([d, m]) => [d, [...m.values()]])),
+      nightPlans: Object.fromEntries(this.nightPlans),
     };
     fs.writeFileSync(`${this.extra}.tmp`, JSON.stringify(data));
     fs.renameSync(`${this.extra}.tmp`, this.extra);
