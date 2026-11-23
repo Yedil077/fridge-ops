@@ -9,6 +9,7 @@ import { applyLearning, evaluateMission, isDue } from "../engine/feedback";
 import { createStore, emptyState, newPlayer, type AppState, type FridgeSettings, type Player, type StateStore } from "../store/appStore";
 import { deliver, detectAlerts } from "./notifications";
 import { bootstrapUsers } from "./users";
+import { pgSslSummary } from "./pgSsl";
 import { Simulator } from "../simulator/simulator";
 import { dayNumber, fmtHM, minuteOfDay, MINUTE_MS, wallClockNow, weekdayOf } from "../time";
 import { kitshopLive, kitshopLiveStarted, type DataLabel } from "./kitshopLive";
@@ -131,6 +132,7 @@ class Runtime {
   static async create(): Promise<Runtime> {
     const store = await createStore();
     console.info(`[apps-holodosov] starting · store=${store.kind} · data=${process.env.DATA_SOURCE ?? "mock"}`);
+    if (store.kind === "postgres") console.info(`[apps-holodosov] ${pgSslSummary(process.env.DATABASE_URL)}`);
     const rt = new Runtime(await store.load(), store);
     console.info(`[apps-holodosov] state loaded · users=${rt.state.users.length} · missions=${rt.state.missions.length}`);
     try {

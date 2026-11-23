@@ -1,5 +1,6 @@
 import "server-only";
 import { Pool } from "pg";
+import { pgSsl, pgUrl } from "./pgSsl";
 import type { Fridge, NetworkSnapshot } from "../domain/types";
 import { KsDataset } from "../kitshop-data/dataset";
 import { FileKsRepo, PgKsRepo, type KsRepo } from "../kitshop-data/repo";
@@ -74,10 +75,10 @@ function createRepo(): KsRepo {
   const driver = process.env.STORE_DRIVER ?? (url ? "postgres" : "file");
   if (driver === "postgres" && url) {
     const pool = new Pool({
-      connectionString: url,
+      connectionString: pgUrl(url),
       max: 3,
       connectionTimeoutMillis: 15_000,
-      ssl: process.env.DATABASE_SSL === "true" ? { rejectUnauthorized: process.env.DATABASE_SSL_STRICT !== "false" } : undefined,
+      ssl: pgSsl(),
     });
     return new PgKsRepo(pool);
   }

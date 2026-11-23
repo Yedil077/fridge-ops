@@ -1,4 +1,5 @@
 import { Pool } from "pg";
+import { pgSsl, pgUrl } from "../server/pgSsl";
 import { compact, migrate, type AppState, type StateStore } from "./appStore";
 
 /**
@@ -37,11 +38,11 @@ export class PgStore implements StateStore {
   constructor(url: string, pool?: Pool) {
     if (!url && !pool) throw new Error("DATABASE_URL is required for STORE_DRIVER=postgres");
     this.pool = pool ?? new Pool({
-      connectionString: url,
+      connectionString: pgUrl(url),
       max: 4,
       // fail fast (and show it in the logs) instead of hanging when the database is unreachable
       connectionTimeoutMillis: 15_000,
-      ssl: process.env.DATABASE_SSL === "true" ? { rejectUnauthorized: process.env.DATABASE_SSL_STRICT !== "false" } : undefined,
+      ssl: pgSsl(),
     });
     this.ready = this.pool.query(DDL).then(() => undefined);
     this.ready.catch((e) => console.error("[apps-holodosov] database init failed:", e instanceof Error ? e.message : e));
