@@ -17,16 +17,24 @@ import { kitshopReader } from "./kitshopWrite";
  * Real KiT Shop data for every screen (DATA_SOURCE=kitshop). READ ONLY.
  *  • PostgreSQL (ks_* tables) is the source of truth; memory holds only catalog, current stock, the last days of receipts
  *    and loads, and the nightly analytics result (norms, curves) — never the 180-day history;
- *  • a background loop syncs every 5 minutes (only new receipts / stock); while the backfill is behind it runs every 20 s;
- *  • the heavy analytics job runs once a day at 03:00 (and when there is no result yet or the shelf lives changed);
+ *  • a background loop syncs every 5 minutes (only new receipts / stock), every 2 minutes during the night route
+ *    (22:00–04:00: the driver's unloads must reach НОЧЬ quickly); while the backfill is behind it runs every 20 s;
+ *  • the heavy analytics job runs once a day at 00:10 — before the night route (and when there is no result yet or the
+ *    shelf lives changed);
  *  • the simulator is never used here.
  */
 
 const TZ = process.env.APP_TIMEZONE || "Asia/Almaty";
 const SYNC_EVERY_MS = 5 * 60_000;
 const BACKLOG_EVERY_MS = 20_000;
-/** the nightly analytics job: from this local hour */
-const ANALYTICS_HOUR = 3;
+/** during the night route (local hours [22, 4)) the sync runs this often */
+const NIGHT_EVERY_MS = 2 * 60_000;
+const isNightRoute = (now: number) => {
+  const h = Math.floor((now % 86_400_000) / 3_600_000);
+  return h >= 22 || h < 4;
+};
+/** the nightly analytics job: from this local minute of the day (00:10 — yesterday is complete, the night route is at 01:00) */
+const ANALYTICS_MINUTE = 10;
 /** no fresh KiT Shop data for this long → the label switches to CACHE */
 export const STALE_AFTER_MS = 15 * 60_000;
 
@@ -102,7 +110,7 @@ export class KitShopLive {
   private now: () => number;
 
   /** deps are injectable for tests (PGlite repo, fake reader, fixed clock); production uses env + the shared transport */
-  /** the analytics job starts by itself (03:00 / first run); tests switch it off and call runAnalyticsNow() */
+  /** the analytics job starts by itself (00:10 / first run); tests switch it off and call runAnalyticsNow() */
   private autoAnalytics: boolean;
 
   constructor(deps: { repo?: KsRepo; reader?: SyncDeps["reader"]; now?: () => number; options?: Partial<SyncOptions>; sleep?: SyncDeps["sleep"]; autoAnalytics?: boolean } = {}) {
@@ -202,17 +210,17 @@ export class KitShopLive {
     }
   }
 
-  /** after every sync tick: the nightly run (03:00), a first run, or a run after the shelf lives changed */
+  /** after every sync tick: the nightly run (00:10), a first run, or a run after the shelf lives changed */
   private maybeRunAnalytics() {
     if (!this.autoAnalytics || this.job.running || this.ds.state.lastSuccessAt === null) return;
     const now = this.now();
     const a = this.analytics;
-    const hour = Math.floor((now % 86_400_000) / 3_600_000);
+    const minute = Math.floor((now % 86_400_000) / 60_000);
     const reason = !a
       ? "первый расчёт"
       : a.shelfLifeKey !== JSON.stringify(this.shelfLife())
         ? "изменены сроки годности"
-        : a.day < dayNumber(now) && hour >= ANALYTICS_HOUR
+        : a.day < dayNumber(now) && minute >= ANALYTICS_MINUTE
           ? "ночной расчёт"
           : null;
     if (reason) void this.runAnalyticsNow(reason);
@@ -249,7 +257,7 @@ export class KitShopLive {
     );
     if (failed.length) console.warn("[kitshop-sync] errors:", failed.map((s) => `${s.step}: ${s.error}`).join("; "));
     const behind = res.backlog.undetailed > 0 || res.backlog.backfillDaysLeft > 0;
-    this.schedule(behind && res.ok ? BACKLOG_EVERY_MS : SYNC_EVERY_MS);
+    this.schedule(behind && res.ok ? BACKLOG_EVERY_MS : isNightRoute(this.now()) ? NIGHT_EVERY_MS : SYNC_EVERY_MS);
     this.maybeRunAnalytics();
     return res;
   }
@@ -345,7 +353,7 @@ export class KitShopLive {
         rowsRead: this.analytics?.rowsRead ?? null,
         running: this.job.running,
         lastError: this.job.lastError,
-        nextAt: `ежедневно в 0${ANALYTICS_HOUR}:00`,
+        nextAt: `ежедневно в 00:${String(ANALYTICS_MINUTE).padStart(2, "0")} (до ночного маршрута)`,
       },
       memory: (() => {
         const m = process.memoryUsage();

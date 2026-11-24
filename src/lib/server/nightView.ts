@@ -2,7 +2,8 @@ import "server-only";
 import type { NetworkSnapshot } from "../domain/types";
 import { CATEGORY_IDS } from "../domain/categories";
 import { analyseBatches } from "../engine/batches";
-import { BIZ_GROUPS, planNight, type BizGroup, type NightFridge, type NightLot, type NightNew, type NightRole } from "../engine/night";
+import { BIZ_GROUPS, placeUnloaded, planNight, type BizGroup, type NightFridge, type NightInHand, type NightLot, type NightNew, type NightRole } from "../engine/night";
+import { fillDirection } from "../kitshop-data/fillDirection";
 import { shelfHoursFor, type ShelfLifeSettings } from "../config/shelfLife";
 import { dayNumber, minuteOfDay } from "../time";
 import type { KitShopLive } from "./kitshopLive";
@@ -128,12 +129,25 @@ export async function nightView(live: KitShopLive, snap: NetworkSnapshot, shelfL
         })
         .sort((a, b) => a - b);
       if (units.length >= 2) v = Math.round(units[Math.floor(units.length / 2)]);
+      else {
+        // too little history for the same weekday (a fresh database): the open days of the last two weeks
+        const recent = Array.from({ length: 14 }, (_, i) => day - 1 - i - cache.startDay).filter((d) => d >= 0 && d < cache.days && (sh.receiptsByDay[d] ?? 0) > 0);
+        const xs = recent
+          .map((d) => {
+            let s = 0;
+            for (let h = 0; h < 24; h++) s += sh.cube[((c * cache.days + d) * 24) + h];
+            return s;
+          })
+          .sort((a, b) => a - b);
+        if (xs.length >= 3) v = Math.round(xs[Math.floor(xs.length / 2)]);
+      }
     }
     demandCache.set(key, v);
     return v;
   };
 
   const stops = planNight({ at, fridges, stock, plan: planBy, demand, routes: NIGHT_ROUTES });
+  const car = inTheCar(live, snap, shelfLife, day, fridges, stock, planBy, demand);
 
   // route order: buildings that give most first (pick up before dropping off), then fridges with pick-ups first
   const net = new Map<string, number>();
@@ -155,6 +169,110 @@ export async function nightView(live: KitShopLive, snap: NetworkSnapshot, shelfL
     analysisAt: cache?.runAt ?? null,
     totals: { writeOff: sum((s) => s.writeOff), moved: sum((s) => s.take), toBase: sum((s) => s.toBase), fresh: sum((s) => s.putNew) },
     stops,
+    car,
+  };
+}
+
+const normName = (s: string) => s.toLowerCase().replace(/ё/g, "е").replace(/[^a-zа-я0-9]+/g, "");
+
+/**
+ * ВЫГРУЗКА В МАШИНЕ: what the driver has taken out of fridges tonight (KiT Shop «Разгрузка», read every 2 minutes at
+ * night) and not loaded anywhere yet — and where each of it goes by the route scheme. A load tonight of a dish that
+ * was taken out tonight is a move (unless the kitchen's table sends that dish to that fridge — then it is new product).
+ */
+function inTheCar(
+  live: KitShopLive,
+  snap: NetworkSnapshot,
+  shelfLife: ShelfLifeSettings,
+  day: number,
+  fridges: NightFridge[],
+  stock: Map<string, NightLot[]>,
+  planBy: Map<string, NightNew[]>,
+  demand: (shopId: string, g: BizGroup) => number | null,
+) {
+  const from = (day - 1) * DAY + 18 * H;
+  const to = day * DAY + 10 * H;
+  const ours = new Set(fridges.map((f) => f.shopId));
+  const products = new Map(snap.products.map((p) => [p.externalId, p]));
+  const info = (productId: string) => {
+    const p = products.get(productId);
+    return {
+      name: p?.name ?? `товар ${productId}`,
+      group: (p ? GROUP_OF_CATEGORY[p.categoryId] : undefined) ?? ("Другое" as BizGroup),
+      shelfHours: p ? shelfHoursFor(shelfLife, p.id, p.categoryId).hours : 48,
+    };
+  };
+  const planNames = new Map([...planBy].map(([shopId, list]) => [shopId, new Set(list.map((n) => normName(n.name)))]));
+
+  type Ev = { at: number; shopId: string; productId: string; qty: number };
+  const unloads: Ev[] = [];
+  const loads: Ev[] = [];
+  const loadTimes = new Map<string, number[]>(); // shop|product → load times (any day in memory)
+  let pending = 0;
+  for (const f of live.ds.fillUps.values()) {
+    if (f.at === null || !ours.has(f.shopId)) continue;
+    const tonight = f.at >= from && f.at <= to;
+    if (!f.detailed) {
+      if (tonight) pending++;
+      continue;
+    }
+    for (const l of live.ds.fillUpLines.get(f.fillupId) ?? []) {
+      const d = fillDirection(f.type, l.qty);
+      const e = { at: f.at, shopId: f.shopId, productId: l.productId, qty: Math.abs(d.delta) };
+      if (d.kind === "load") {
+        const k = `${f.shopId}|${l.productId}`;
+        loadTimes.set(k, [...(loadTimes.get(k) ?? []), f.at]);
+      }
+      if (!tonight || e.qty === 0) continue;
+      if (d.kind === "unload") unloads.push(e);
+      else if (d.kind === "load") loads.push(e);
+    }
+  }
+  unloads.sort((a, b) => a.at - b.at);
+  const takenTonight = new Set(unloads.map((u) => u.productId));
+  const isMove = (e: Ev) => takenTonight.has(e.productId) && !planNames.get(e.shopId)?.has(normName(info(e.productId).name));
+
+  // what is in the car: taken out − put back somewhere (first taken, first put)
+  const left = unloads.map((u) => ({ ...u }));
+  const placed = new Map<string, number>(); // shop|product → moved in tonight
+  for (const e of loads.filter(isMove)) {
+    placed.set(`${e.shopId}|${e.productId}`, (placed.get(`${e.shopId}|${e.productId}`) ?? 0) + e.qty);
+    let q = e.qty;
+    for (const u of left) {
+      if (q <= 0) break;
+      if (u.productId !== e.productId || u.qty <= 0) continue;
+      const k = Math.min(q, u.qty);
+      u.qty -= k;
+      q -= k;
+    }
+  }
+  const items: NightInHand[] = left
+    .filter((u) => u.qty > 0)
+    .map((u) => {
+      const before = (loadTimes.get(`${u.shopId}|${u.productId}`) ?? []).filter((t) => t < u.at).sort((a, b) => b - a);
+      return { productId: u.productId, ...info(u.productId), qty: u.qty, from: u.shopId, takenAt: u.at, loadedAt: before[0] ?? null };
+    });
+
+  // what stands in a receiver after tonight's delivery: good units now + new product still to be loaded
+  const newLoaded = new Map<string, number>(); // shop|group
+  for (const e of loads) if (!isMove(e)) newLoaded.set(`${e.shopId}|${info(e.productId).group}`, (newLoaded.get(`${e.shopId}|${info(e.productId).group}`) ?? 0) + e.qty);
+  const occupied = (shopId: string, g: BizGroup) => {
+    const now = (stock.get(shopId) ?? [])
+      .filter((l) => l.group === g && (l.loadedAt === null || (snap.now - l.loadedAt) / H < l.shelfHours))
+      .reduce((a, l) => a + l.qty, 0);
+    const planned = (planBy.get(shopId) ?? []).filter((n) => n.group === g).reduce((a, n) => a + n.qty, 0);
+    return now + Math.max(0, planned - (newLoaded.get(`${shopId}|${g}`) ?? 0));
+  };
+
+  const placements = placeUnloaded({ at: Math.max(snap.now, day * DAY + NIGHT_START_HOUR * H), fridges, routes: NIGHT_ROUTES, demand, occupied, items });
+  return {
+    from,
+    to,
+    /** tonight's loads / unloads whose lines KiT Shop has not given yet */
+    pending,
+    taken: unloads.reduce((a, u) => a + u.qty, 0),
+    put: [...placed.values()].reduce((a, q) => a + q, 0),
+    items: placements,
   };
 }
 

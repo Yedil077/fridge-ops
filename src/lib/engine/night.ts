@@ -215,3 +215,130 @@ function line(u: NightLot & { age: number | null; left: number | null }, qty: nu
     reason,
   };
 }
+
+// ───────────────────────── ВЫГРУЗКА В МАШИНЕ — where to put what the driver has already taken ─────────────────────────
+
+/** Units the driver took out of a fridge tonight (KiT Shop «Разгрузка») and has not loaded anywhere yet. */
+export interface NightInHand {
+  productId: string;
+  name: string;
+  group: BizGroup;
+  shelfHours: number;
+  qty: number;
+  /** the fridge it was taken from */
+  from: string;
+  takenAt: number;
+  /** when it had been loaded into that fridge; null = unknown */
+  loadedAt: number | null;
+}
+
+export interface NightPlacement {
+  productId: string;
+  name: string;
+  group: BizGroup;
+  qty: number;
+  from: string;
+  takenAt: number;
+  ageHours: number | null;
+  leftHours: number | null;
+  /** where to put it (best first) */
+  targets: { to: string; qty: number; why: string }[];
+  /** what no fridge should get, and why (write off / to the base / the manager decides) */
+  rest: { qty: number; reason: string; writeOff: boolean } | null;
+}
+
+/**
+ * The same rules as the night plan, for units already in the car: a receiver must be in the same building as the
+ * fridge they came from or on an allowed route; Заммлер and closed fridges never receive; older units (past half the
+ * shelf life) only go to strong points (never Жибек Жолы); too old units are not driven around. Room in a receiver =
+ * what its group usually sells that day − what stands there now − the new product still to come − what is already put.
+ */
+export function placeUnloaded(input: {
+  at: number;
+  fridges: NightFridge[];
+  routes: [string, string][];
+  demand: (shopId: string, group: BizGroup) => number | null;
+  /** units of a group in a fridge after tonight's new delivery, before anything from the car is put there */
+  occupied: (shopId: string, group: BizGroup) => number;
+  items: NightInHand[];
+  maxMoveShare?: number;
+}): NightPlacement[] {
+  const maxShare = input.maxMoveShare ?? 0.75;
+  const fr = new Map(input.fridges.map((f) => [f.shopId, f]));
+  const allowed = new Set(input.routes.map(([a, b]) => `${a}→${b}`));
+  const put = new Map<string, number>();
+  const roomOf = (shopId: string, g: BizGroup) => {
+    const d = input.demand(shopId, g);
+    return d === null ? null : Math.max(0, Math.round(d) - input.occupied(shopId, g) - (put.get(`${shopId}|${g}`) ?? 0));
+  };
+  const strong = (g: BizGroup) => {
+    const xs = input.fridges.map((f) => input.demand(f.shopId, g)).filter((x): x is number => x !== null).sort((a, b) => a - b);
+    return xs.length ? xs[Math.floor(xs.length / 2)] : 0;
+  };
+  const items = input.items
+    .filter((i) => i.qty > 0)
+    .map((i) => {
+      const age = i.loadedAt === null ? null : Math.max(0, (input.at - i.loadedAt) / H);
+      return { ...i, age, left: age === null ? null : i.shelfHours - age };
+    })
+    // old units first: they have the fewest places they may go to
+    .sort((a, b) => (b.age ?? -1) - (a.age ?? -1));
+
+  return items.map((u) => {
+    const out: NightPlacement = {
+      productId: u.productId,
+      name: u.name,
+      group: u.group,
+      qty: u.qty,
+      from: u.from,
+      takenAt: u.takenAt,
+      ageHours: u.age === null ? null : Math.round(u.age),
+      leftHours: u.left === null ? null : Math.max(0, Math.round(u.left)),
+      targets: [],
+      rest: null,
+    };
+    if (u.left !== null && u.left <= 0) {
+      out.rest = { qty: u.qty, reason: `срок ${u.shelfHours} ч истёк — списать`, writeOff: true };
+      return out;
+    }
+    if (u.age !== null && u.age > u.shelfHours * maxShare) {
+      out.rest = { qty: u.qty, reason: `стоит ${Math.round(u.age)} ч из ${u.shelfHours} — возить поздно: на базу, решает менеджер`, writeOff: false };
+      return out;
+    }
+    const from = fr.get(u.from);
+    const old = u.age === null || u.age > u.shelfHours / 2;
+    let left = u.qty;
+    let unknown = false;
+    while (left > 0) {
+      let best: { f: NightFridge; c: number; room: number } | null = null;
+      for (const to of input.fridges) {
+        if (to.shopId === u.from || to.role === "isolated" || to.role === "closed") continue;
+        const c = !from ? 1 : from.building === to.building ? 0 : allowed.has(`${from.building}→${to.building}`) ? 1 : null;
+        if (c === null) continue;
+        if (old && (to.role === "low" || (input.demand(to.shopId, u.group) ?? 0) < strong(u.group))) continue;
+        const room = roomOf(to.shopId, u.group);
+        if (room === null) unknown = true;
+        if (!room || room <= 0) continue;
+        if (!best || c < best.c || (c === best.c && room > best.room)) best = { f: to, c, room };
+      }
+      if (!best) break;
+      const q = Math.min(left, best.room);
+      out.targets.push({
+        to: best.f.shopId,
+        qty: q,
+        why: `${best.c === 0 ? "то же здание" : "по маршруту"}; ${u.group.toLowerCase()} здесь обычно не хватает ещё ~${best.room} шт.${old ? " (не свежее — только в сильную точку)" : ""}`,
+      });
+      put.set(`${best.f.shopId}|${u.group}`, (put.get(`${best.f.shopId}|${u.group}`) ?? 0) + q);
+      left -= q;
+    }
+    if (left > 0)
+      out.rest = {
+        qty: left,
+        reason: unknown && !out.targets.length
+          ? "нет истории продаж по точкам — куда ставить, решает менеджер"
+          : "по схеме маршрута ни одной точке больше не нужно — на базу, решает менеджер",
+        writeOff: false,
+      };
+    return out;
+  });
+}

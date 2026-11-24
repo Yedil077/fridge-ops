@@ -26,7 +26,11 @@ export function NightScreen({ mobile = false }: { mobile?: boolean }) {
   const { data, error, isFetching } = useQuery({
     queryKey: ["night", date],
     queryFn: () => api<Night>(`/api/night${date ? `?date=${date}` : ""}`),
-    refetchInterval: 5 * 60_000,
+    // at night the driver's unloads come in every 2 minutes — the screen follows every minute
+    refetchInterval: () => {
+      const h = new Date().getHours();
+      return h >= 22 || h < 4 ? 60_000 : 5 * 60_000;
+    },
   });
   const me = useMe().data;
   const manager = atLeast(me, "MANAGER");
@@ -112,6 +116,8 @@ export function NightScreen({ mobile = false }: { mobile?: boolean }) {
         )}
       </div>
 
+      <CarBlock car={data.car} names={new Map(data.stops.map((x) => [x.shopId, x.name]))} why={why && manager} />
+
       <ol className="mt-3 space-y-2">
         {stops.map((s, i) => {
           const head = s.building !== building;
@@ -184,6 +190,50 @@ function StopCard({ s, n, why, names }: { s: Stop; n: number; why: boolean; name
         </div>
       )}
     </article>
+  );
+}
+
+/** ВЫГРУЗКА В МАШИНЕ: what the driver has taken tonight (KiT Shop «Разгрузка») and where each of it goes */
+function CarBlock({ car, names, why }: { car: NightView["car"]; names: Map<string, string>; why: boolean }) {
+  if (!car.items.length && !car.taken && !car.pending) return null;
+  const units = car.items.reduce((a, i) => a + i.qty, 0);
+  return (
+    <section className="card mt-3 border-accent p-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <div className="text-[15px] font-bold">🚚 В МАШИНЕ — куда поставить</div>
+        <div className="num text-[12px] text-ink-3">
+          снято {car.taken} · уже поставлено {car.put} · в машине {units}
+        </div>
+      </div>
+      {car.pending > 0 && <p className="mt-1 text-[12px] text-warn">KiT Shop ещё не отдал строки {car.pending} операций — обновится через 1–2 минуты.</p>}
+      {!car.items.length && <p className="mt-1 text-[13px] text-good-ink">Всё снятое уже поставлено.</p>}
+      <ul className="mt-2 space-y-2">
+        {car.items.map((i, k) => (
+          <li key={k} className="border-b border-line pb-2 last:border-0">
+            <div className="flex justify-between gap-2 text-[14px]">
+              <span className="font-semibold">
+                {i.name} ×{i.qty}
+              </span>
+              <span className="whitespace-nowrap text-[12px] text-ink-2">
+                из {names.get(i.from) ?? i.from}
+                {i.ageHours !== null ? ` · стоит ${i.ageHours} ч` : ""}
+              </span>
+            </div>
+            {i.targets.map((t, n) => (
+              <div key={n} className="ml-3 text-[14px]">
+                → <b>{names.get(t.to) ?? t.to}</b> ×{t.qty}
+                {why && <span className="ml-1 text-[12px] text-ink-3">· {t.why}</span>}
+              </div>
+            ))}
+            {i.rest && (
+              <div className={clsx("ml-3 text-[13px]", i.rest.writeOff ? "text-crit-ink" : "text-warn")}>
+                {i.targets.length ? "остальное " : ""}×{i.rest.qty}: {i.rest.reason}
+              </div>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 

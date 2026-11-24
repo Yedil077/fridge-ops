@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { planNight, type BizGroup, type NightFridge, type NightLot, type NightNew } from "../src/lib/engine/night";
+import { placeUnloaded, planNight, type BizGroup, type NightFridge, type NightInHand, type NightLot, type NightNew } from "../src/lib/engine/night";
 
 /**
  * НОЧНОЕ ЗАДАНИЕ: the kitchen's new product is given and never changed; the app decides what happens to what already
@@ -108,4 +108,51 @@ test("units sum up: every good unit is kept, moved or sent to the base exactly o
   const base = all.reduce((a, s) => a + s.toBase.reduce((x, m) => x + m.qty, 0), 0);
   const wo = all.reduce((a, s) => a + s.writeOff.reduce((x, m) => x + m.qty, 0), 0);
   assert.equal(kept + moved + base + wo, 4 + 1 + 3 + 2 + 2 + 2);
+});
+
+// ───────── ВЫГРУЗКА В МАШИНЕ ─────────
+const inHand = (productId: string, group: BizGroup, qty: number, from: string, hoursAgo: number | null, shelfHours = 48): NightInHand => ({
+  productId,
+  name: productId,
+  group,
+  qty,
+  shelfHours,
+  from,
+  takenAt: AT - H,
+  loadedAt: hoursAgo === null ? null : AT - hoursAgo * H,
+});
+const place = (items: NightInHand[], occupied: Record<string, number> = {}) =>
+  placeUnloaded({
+    at: AT,
+    fridges,
+    routes: [["ДОСМУХАМЕДОВА", "КАБЛАН-КОНКОРД"], ["ЖИБЕК", "САТТИ"]],
+    demand: (s, g) => demand[s]?.[g] ?? null,
+    occupied: (s, g) => occupied[`${s}|${g}`] ?? 0,
+    items,
+  });
+
+test("в машине: taken from Шарипова goes to Каблан by the route, never to Заммлер; room counts what stands and the new product", () => {
+  const [p] = place([inHand("lagman", "Горячее", 15, "SH", 20)], { "K3|Горячее": 4 });
+  assert.deepEqual(p.targets.map((t) => [t.to, t.qty]), [["K3", 8]]);
+  assert.equal(p.rest?.qty, 7);
+  assert.match(p.rest!.reason, /на базу/);
+});
+
+test("в машине: the same building first, then by room; old units only to strong points, never Жибек", () => {
+  const [fresh] = place([inHand("c", "Салаты", 5, "ZH", 6)]);
+  // ЖИБЕК → САТТИ is allowed: S1 has more room than S2
+  assert.deepEqual(fresh.targets.map((t) => [t.to, t.qty]), [["S1", 5]]);
+  const [old] = place([inHand("c", "Салаты", 12, "S2", 30)]);
+  // older than half of 48 h: only fridges with demand ≥ the median (S1 8, K3 9 — K3 is not on a route from САТТИ)
+  assert.deepEqual(old.targets.map((t) => [t.to, t.qty]), [["S1", 8]]);
+  assert.equal(old.rest?.qty, 4);
+});
+
+test("в машине: expired → write off; too old → not driven around; unknown sales → the manager decides", () => {
+  const r = place([inHand("x", "Горячее", 2, "S2", 50), inHand("y", "Горячее", 3, "S2", 40), inHand("z", "Десерты", 1, "S2", 2, 72)]);
+  const by = new Map(r.map((p) => [p.productId, p]));
+  assert.equal(by.get("x")?.rest?.writeOff, true);
+  assert.match(by.get("y")!.rest!.reason, /возить поздно/);
+  assert.equal(by.get("y")?.targets.length, 0);
+  assert.match(by.get("z")!.rest!.reason, /нет истории продаж/);
 });
